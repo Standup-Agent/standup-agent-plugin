@@ -54,6 +54,8 @@ var CAPTURE = {
   recoverMaxSessions: 50,
   /** Commits after the last transcript entry still count to the session (commit right before /exit). */
   commitSlackMinutes: 5,
+  /** At most this many sessions are captured right after repos are marked work (task 3). */
+  backfillMaxSessions: 200,
   maxCommitsPerBranch: 100,
   maxFilesPerBranch: 200,
   maxCommitMessageBytes: 1024,
@@ -205,12 +207,12 @@ function redactSecrets(input) {
       return rule.replace ? rule.replace(m, ...rest.filter((x) => typeof x === "string")) : mark(rule.kind);
     });
   }
-  text = text.replace(KEY_VALUE, (m, prefix, dq, sq, bare, offset, whole) => {
-    const value = dq ?? sq ?? bare ?? "";
+  text = text.replace(KEY_VALUE, (m, prefix, dq, sq2, bare, offset, whole) => {
+    const value = dq ?? sq2 ?? bare ?? "";
     if (value === "" || PLACEHOLDER.test(value.trim()) || value.startsWith("[REDACTED")) return m;
     if (bare !== void 0 && /:\s*$/.test(prefix) && looksLikeProse(bare, whole, offset + m.length)) return m;
     hit("password");
-    const quote = dq !== void 0 ? '"' : sq !== void 0 ? "'" : "";
+    const quote = dq !== void 0 ? '"' : sq2 !== void 0 ? "'" : "";
     return `${prefix}${quote}${mark("password")}${quote}`;
   });
   text = redactEnvBlocks(text, hit);
@@ -328,6 +330,23 @@ function recordCapture(sessionId, transcriptMtimeMs, now = /* @__PURE__ */ new D
     s.last_capture_at = now.toISOString();
   });
 }
+function setRepoKinds(kinds) {
+  const becameWork = [];
+  updateState((s) => {
+    const repos = { ...s.repos ?? {} };
+    for (const [path, kind] of Object.entries(kinds)) {
+      if (kind === "work" && repos[path] !== "work") becameWork.push(path);
+      repos[path] = kind;
+    }
+    s.repos = repos;
+  });
+  return becameWork;
+}
+function markRepoAsked(path, now = /* @__PURE__ */ new Date()) {
+  updateState((s) => {
+    s.repos_asked = { ...s.repos_asked ?? {}, [path]: now.toISOString() };
+  });
+}
 
 // src/store.ts
 var import_node_crypto = require("node:crypto");
@@ -357,20 +376,20 @@ function writeRaw(capture, now = /* @__PURE__ */ new Date()) {
 function cleanupExpired(now = /* @__PURE__ */ new Date()) {
   const cutoff = now.getTime() - DEFAULTS.rawTtlDays * 864e5;
   let removed = 0;
-  const list = (dir) => {
+  const list2 = (dir) => {
     try {
       return (0, import_node_fs4.readdirSync)(dir, { withFileTypes: true });
     } catch {
       return [];
     }
   };
-  for (const repo of list(paths.digests())) {
+  for (const repo of list2(paths.digests())) {
     if (!repo.isDirectory()) continue;
     const repoDir = (0, import_node_path5.join)(paths.digests(), repo.name);
-    for (const branch of list(repoDir)) {
+    for (const branch of list2(repoDir)) {
       if (!branch.isDirectory()) continue;
       const rawDir = (0, import_node_path5.join)(repoDir, branch.name, "raw");
-      for (const f of list(rawDir)) {
+      for (const f of list2(rawDir)) {
         if (!f.isFile()) continue;
         const file = (0, import_node_path5.join)(rawDir, f.name);
         try {
@@ -426,6 +445,12 @@ function mainWorktreeRoot(root) {
   const abs = (0, import_node_path6.isAbsolute)(common) ? common : (0, import_node_path6.resolve)(root, common);
   const main2 = (0, import_node_path6.dirname)(abs);
   return main2 === root ? null : main2;
+}
+function gitConfigRemotes(root) {
+  const out = git(root, ["config", "--get-regexp", "^remote\\..*\\.url$"]) ?? "";
+  const pairs = out.split("\n").map((l) => /^remote\.(.+)\.url (.+)$/.exec(l.trim())).filter((m) => m !== null).map((m) => ({ name: m[1], url: m[2] }));
+  pairs.sort((a, b) => Number(b.name === "origin") - Number(a.name === "origin"));
+  return pairs.map((p) => p.url);
 }
 function currentBranch(cwd) {
   return git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"])?.trim() || null;
@@ -772,12 +797,214 @@ function groupByBranch(messages, fallback) {
   const groups = /* @__PURE__ */ new Map();
   for (const m of messages) {
     const b = m.branch && m.branch !== "HEAD" ? m.branch : fallback;
-    let list = groups.get(b);
-    if (!list) groups.set(b, list = []);
-    list.push(m);
+    let list2 = groups.get(b);
+    if (!list2) groups.set(b, list2 = []);
+    list2.push(m);
   }
   if (groups.size === 0) groups.set(fallback, []);
   return groups;
+}
+
+// src/commands/repos.ts
+var import_node_path10 = require("node:path");
+
+// src/capture/discover.ts
+var import_node_child_process2 = require("node:child_process");
+var import_node_fs7 = require("node:fs");
+var import_node_path8 = require("node:path");
+function projectDirName(path) {
+  return path.replace(/[^a-zA-Z0-9]/g, "-");
+}
+function findSessions(o) {
+  const dirs = o.repos.map(projectDirName);
+  if (dirs.length === 0) return [];
+  const found = [];
+  for (const dir of safeReaddir(o.projectsDir)) {
+    if (!dirs.some((r) => dir === r || dir.startsWith(`${r}-`))) continue;
+    for (const file of safeReaddir((0, import_node_path8.join)(o.projectsDir, dir))) {
+      if (!file.endsWith(".jsonl")) continue;
+      const sessionId = (0, import_node_path8.basename)(file, ".jsonl");
+      if (sessionId === o.exclude) continue;
+      const path = (0, import_node_path8.join)(o.projectsDir, dir, file);
+      let mtime;
+      try {
+        mtime = (0, import_node_fs7.statSync)(path).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (mtime < o.sinceMs) continue;
+      const last = o.captures?.[sessionId];
+      if (last !== void 0 && mtime <= last) continue;
+      found.push({ job: { session_id: sessionId, transcript_path: path, reason: o.reason }, mtime });
+    }
+  }
+  return found.sort((a, b) => b.mtime - a.mtime).slice(0, o.max).map((f) => f.job);
+}
+function spawnCapture(cliPath, jobs) {
+  if (jobs.length === 0) return;
+  (0, import_node_child_process2.spawn)(process.execPath, [cliPath, "capture", JSON.stringify(jobs)], { detached: true, stdio: "ignore" }).unref();
+}
+function safeReaddir(dir) {
+  try {
+    return (0, import_node_fs7.readdirSync)(dir);
+  } catch {
+    return [];
+  }
+}
+
+// src/repos.ts
+var import_node_fs8 = require("node:fs");
+var import_node_path9 = require("node:path");
+function normalizeRemote(url) {
+  let u = url.trim();
+  if (u === "") return null;
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/)(.+)$/.exec(u);
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) {
+    if (!scp) return null;
+    u = `ssh://${scp[1]}/${scp[2]}`;
+  }
+  let parsed;
+  try {
+    parsed = new URL(u);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol === "file:" || !parsed.hostname) return null;
+  const path = parsed.pathname.replace(/\.git\/?$/i, "").replace(/^\/+|\/+$/g, "");
+  if (path === "") return null;
+  return `${parsed.hostname}/${path}`.toLowerCase();
+}
+function normalizeOrg(org) {
+  const o = org.trim();
+  return normalizeRemote(o) ?? o.replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+}
+function matchesWorkOrg(remotes, workOrgs) {
+  const orgs = workOrgs.map(normalizeOrg).filter((o) => o.includes("/"));
+  return remotes.some((r) => orgs.some((o) => r === o || r.startsWith(`${o}/`)));
+}
+function repoOf(cwd) {
+  if (!(0, import_node_fs8.existsSync)(cwd)) return null;
+  const root = repoRoot(cwd);
+  if (!root) return null;
+  const path = mainWorktreeRoot(root) ?? root;
+  const remotes = [...new Set(gitConfigRemotes(path).map(normalizeRemote).filter((r) => r !== null))];
+  return { path, name: (0, import_node_path9.basename)(path), remotes };
+}
+async function scanRepos(projectsDir, days, now = Date.now()) {
+  const floor = now - days * 864e5;
+  const byPath = /* @__PURE__ */ new Map();
+  for (const dir of safeReaddir2(projectsDir)) {
+    const newest = newestTranscript((0, import_node_path9.join)(projectsDir, dir), floor);
+    if (!newest) continue;
+    const cwd = await readTranscriptCwd(newest.path);
+    if (!cwd) continue;
+    const repo = repoOf(cwd);
+    if (!repo) continue;
+    const lastActivity = new Date(newest.mtime).toISOString();
+    const seen = byPath.get(repo.path);
+    if (!seen || seen.lastActivity < lastActivity) byPath.set(repo.path, { ...repo, lastActivity });
+  }
+  return [...byPath.values()].sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
+}
+function classify(candidates, state) {
+  const out = { marked: [], autoWork: [], ask: [] };
+  const orgs = state.team?.work_orgs ?? [];
+  for (const c of candidates) {
+    const kind = state.repos?.[c.path];
+    if (kind) out.marked.push({ ...c, kind });
+    else if (matchesWorkOrg(c.remotes, orgs)) out.autoWork.push(c);
+    else out.ask.push(c);
+  }
+  return out;
+}
+function newestTranscript(dir, floor) {
+  let best = null;
+  for (const f of safeReaddir2(dir)) {
+    if (!f.endsWith(".jsonl")) continue;
+    const path = (0, import_node_path9.join)(dir, f);
+    try {
+      const mtime = (0, import_node_fs8.statSync)(path).mtimeMs;
+      if (mtime >= floor && (!best || mtime > best.mtime)) best = { path, mtime };
+    } catch {
+    }
+  }
+  return best;
+}
+function safeReaddir2(dir) {
+  try {
+    return (0, import_node_fs8.readdirSync)(dir);
+  } catch {
+    return [];
+  }
+}
+
+// src/commands/repos.ts
+async function reposCommand(args, cliPath, now = Date.now()) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case "scan":
+      return { code: 0, out: await scan(cliPath, now) };
+    case "set":
+      return set(rest, cliPath, now);
+    case "list":
+    case void 0:
+      return { code: 0, out: list() };
+    default:
+      return { code: 1, out: { error: `unknown subcommand: ${sub}`, usage: "repos scan | set <path>=work|personal ... | list" } };
+  }
+}
+var brief = (r) => ({ path: r.path, name: r.name, remote: r.remotes[0] ?? null, last_activity: r.lastActivity.slice(0, 10) });
+async function scan(cliPath, now) {
+  const state = readState();
+  const found = classify(await scanRepos(paths.claudeProjects(), DEFAULTS.repoScanDays, now), state);
+  if (found.autoWork.length > 0) {
+    const becameWork = setRepoKinds(Object.fromEntries(found.autoWork.map((r) => [r.path, "work"])));
+    backfill(becameWork, cliPath, now);
+  }
+  log("info", "repos: scan", { found: found.marked.length + found.autoWork.length + found.ask.length, auto: found.autoWork.length, ask: found.ask.length });
+  return {
+    team: state.team?.name ?? null,
+    work_orgs: state.team?.work_orgs ?? [],
+    auto_marked_work: found.autoWork.map(brief),
+    ask: found.ask.map(brief),
+    already_marked: found.marked.map((r) => ({ ...brief(r), kind: r.kind }))
+  };
+}
+function set(pairs, cliPath, now) {
+  const kinds = {};
+  for (const p of pairs) {
+    const eq = p.lastIndexOf("=");
+    const path = p.slice(0, eq);
+    const kind = p.slice(eq + 1);
+    if (eq <= 0 || !(0, import_node_path10.isAbsolute)(path) || kind !== "work" && kind !== "personal") {
+      return { code: 1, out: { error: `expected <absolute path>=work|personal, got: ${p}` } };
+    }
+    kinds[repoOf(path)?.path ?? path] = kind;
+  }
+  if (Object.keys(kinds).length === 0) return { code: 1, out: { error: "nothing to set" } };
+  const becameWork = setRepoKinds(kinds);
+  const backfilled = backfill(becameWork, cliPath, now);
+  log("info", "repos: set", { work: Object.values(kinds).filter((k) => k === "work").length, personal: Object.values(kinds).filter((k) => k === "personal").length, backfilled });
+  return { code: 0, out: { updated: kinds, backfill_sessions: backfilled } };
+}
+function list() {
+  const state = readState();
+  return {
+    team: state.team?.name ?? null,
+    repos: Object.entries(state.repos ?? {}).map(([path, kind]) => ({ path, kind }))
+  };
+}
+function backfill(repos, cliPath, now) {
+  if (repos.length === 0) return 0;
+  const jobs = findSessions({
+    projectsDir: paths.claudeProjects(),
+    repos,
+    sinceMs: now - DEFAULTS.joinBackfillDays * 864e5,
+    reason: "backfill",
+    max: CAPTURE.backfillMaxSessions
+  });
+  spawnCapture(cliPath, jobs);
+  return jobs.length;
 }
 
 // src/hookio.ts
@@ -793,7 +1020,7 @@ function parseHookInput(raw) {
 }
 
 // src/hooks/session-end.ts
-var import_node_child_process2 = require("node:child_process");
+var import_node_child_process3 = require("node:child_process");
 function sessionEnd(input, cliPath) {
   const job = JSON.stringify({
     session_id: input.session_id,
@@ -801,87 +1028,111 @@ function sessionEnd(input, cliPath) {
     cwd: input.cwd,
     reason: input.reason
   });
-  (0, import_node_child_process2.spawn)(process.execPath, [cliPath, "capture", job], { detached: true, stdio: "ignore" }).unref();
+  (0, import_node_child_process3.spawn)(process.execPath, [cliPath, "capture", job], { detached: true, stdio: "ignore" }).unref();
 }
 
 // src/hooks/session-start.ts
-var import_node_child_process3 = require("node:child_process");
-var import_node_fs7 = require("node:fs");
-var import_node_path8 = require("node:path");
+var import_node_path11 = require("node:path");
 function sessionStart(input, cliPath) {
+  let out = null;
+  try {
+    out = newRepoCheck(input, cliPath);
+  } catch (err) {
+    log("error", "session-start: repo check failed", { error: err instanceof Error ? err.message : String(err) });
+  }
   try {
     const jobs = findMissedSessions(input);
     if (jobs.length > 0) {
-      (0, import_node_child_process3.spawn)(process.execPath, [cliPath, "capture", JSON.stringify(jobs)], { detached: true, stdio: "ignore" }).unref();
+      spawnCapture(cliPath, jobs);
       log("info", "session-start: recovering missed sessions", { count: jobs.length });
     }
   } catch (err) {
     log("error", "session-start: recovery failed", { error: err instanceof Error ? err.message : String(err) });
   }
-  return null;
-}
-function projectDirName(path) {
-  return path.replace(/[^a-zA-Z0-9]/g, "-");
+  return out;
 }
 function findMissedSessions(input, now = Date.now()) {
   const state = readState();
-  const repos = workRepos(state).map(projectDirName);
-  if (repos.length === 0) return [];
-  const projectsDir = input.transcript_path ? (0, import_node_path8.dirname)((0, import_node_path8.dirname)(input.transcript_path)) : paths.claudeProjects();
-  const floor = now - CAPTURE.recoverLookbackDays * 864e5;
-  const captures = state.captures ?? {};
-  const found = [];
-  for (const dir of safeReaddir(projectsDir)) {
-    if (!repos.some((r) => dir === r || dir.startsWith(`${r}-`))) continue;
-    for (const file of safeReaddir((0, import_node_path8.join)(projectsDir, dir))) {
-      if (!file.endsWith(".jsonl")) continue;
-      const sessionId = (0, import_node_path8.basename)(file, ".jsonl");
-      if (sessionId === input.session_id) continue;
-      const path = (0, import_node_path8.join)(projectsDir, dir, file);
-      let mtime;
-      try {
-        mtime = (0, import_node_fs7.statSync)(path).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (mtime < floor) continue;
-      const last = captures[sessionId];
-      if (last !== void 0 && mtime <= last) continue;
-      found.push({ job: { session_id: sessionId, transcript_path: path, reason: "recover" }, mtime });
-    }
-  }
-  return found.sort((a, b) => b.mtime - a.mtime).slice(0, CAPTURE.recoverMaxSessions).map((f) => f.job);
+  return findSessions({
+    projectsDir: projectsDirFor(input),
+    repos: workRepos(state),
+    sinceMs: now - CAPTURE.recoverLookbackDays * 864e5,
+    captures: state.captures ?? {},
+    exclude: input.session_id,
+    reason: "recover",
+    max: CAPTURE.recoverMaxSessions
+  });
 }
-function safeReaddir(dir) {
-  try {
-    return (0, import_node_fs7.readdirSync)(dir);
-  } catch {
-    return [];
+function projectsDirFor(input) {
+  return input.transcript_path ? (0, import_node_path11.dirname)((0, import_node_path11.dirname)(input.transcript_path)) : paths.claudeProjects();
+}
+function newRepoCheck(input, cliPath, state = readState()) {
+  if (!state.team || !input.cwd) return null;
+  const repo = repoOf(input.cwd);
+  if (!repo || state.repos?.[repo.path] || state.repos_asked?.[repo.path]) return null;
+  if (matchesWorkOrg(repo.remotes, state.team.work_orgs ?? [])) {
+    setRepoKinds({ [repo.path]: "work" });
+    log("info", "repos: marked work by org", { repo: repo.name });
+    return { systemMessage: `\u{1F4CB} Standup Agent: ${repo.name} \u2014 \u0440\u0435\u043F\u043E \u043E\u0440\u0433\u0430\u043D\u0438\u0437\u0430\u0446\u0438\u0438 \u043A\u043E\u043C\u0430\u043D\u0434\u044B, \u0432\u043A\u043B\u044E\u0447\u0451\u043D \u0432 \u0441\u0442\u0435\u043D\u0434\u0430\u043F` };
   }
+  markRepoAsked(repo.path);
+  log("info", "repos: asking about a new repo", { repo: repo.name });
+  return {
+    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: askAboutRepo(repo, cliPath, state.team.name) }
+  };
+}
+var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+function cliCommand(cliPath, args) {
+  return `CLAUDE_PLUGIN_DATA=${sq(dataDir())} node ${sq(cliPath)} ${args}`;
+}
+function askAboutRepo(repo, cliPath, teamName) {
+  const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : " (\u0431\u0435\u0437 remote)";
+  const set2 = (kind) => cliCommand(cliPath, `repos set ${sq(`${repo.path}=${kind}`)}`);
+  return `[Standup Agent] \u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u0432\u043F\u0435\u0440\u0432\u044B\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u0440\u0435\u043F\u043E ${repo.name}${where} \u0441 \u0442\u0435\u0445 \u043F\u043E\u0440, \u043A\u0430\u043A \u0432\u0441\u0442\u0443\u043F\u0438\u043B \u0432 \u043A\u043E\u043C\u0430\u043D\u0434\u0443${teamName ? ` \xAB${teamName}\xBB` : ""}. \u042D\u0442\u043E\u0442 \u0432\u043E\u043F\u0440\u043E\u0441 \u0437\u0430\u0434\u0430\u0451\u0442\u0441\u044F \u043E\u0434\u0438\u043D \u0440\u0430\u0437.
+
+\u041F\u0440\u0435\u0436\u0434\u0435 \u0447\u0435\u043C \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0442\u044C \u043F\u0435\u0440\u0432\u0443\u044E \u043F\u0440\u043E\u0441\u044C\u0431\u0443 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F, \u0432\u044B\u0437\u043E\u0432\u0438 AskUserQuestion: \u0432\u043E\u043F\u0440\u043E\u0441 \xAB\u0412\u043A\u043B\u044E\u0447\u0430\u0442\u044C \u0440\u0435\u043F\u043E ${repo.name} \u0432 \u0441\u0442\u0435\u043D\u0434\u0430\u043F?\xBB, header \xAB\u0421\u0442\u0435\u043D\u0434\u0430\u043F\xBB, \u0434\u0432\u0435 \u043E\u043F\u0446\u0438\u0438:
+- \xAB\u0414\u0430, \u0440\u0430\u0431\u043E\u0447\u0438\u0439\xBB \u2014 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435: \u0440\u0430\u0431\u043E\u0442\u0430 \u0432 \u044D\u0442\u043E\u043C \u0440\u0435\u043F\u043E \u043F\u043E\u043F\u0430\u0434\u0451\u0442 \u0432 \u0447\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 (\u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u0432\u0438\u0434\u0438\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0442\u043E, \u0447\u0442\u043E \u0442\u044B \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0448\u044C);
+- \xAB\u041D\u0435\u0442, \u043B\u0438\u0447\u043D\u044B\u0439\xBB \u2014 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435: \u043D\u0438\u0447\u0435\u0433\u043E \u0438\u0437 \u044D\u0442\u043E\u0433\u043E \u0440\u0435\u043F\u043E \u043D\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442\u0441\u044F \u0434\u0430\u0436\u0435 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E.
+
+\u041F\u043E \u043E\u0442\u0432\u0435\u0442\u0443 \u0432\u044B\u043F\u043E\u043B\u043D\u0438 \u043E\u0434\u043D\u0443 \u043A\u043E\u043C\u0430\u043D\u0434\u0443 \u0447\u0435\u0440\u0435\u0437 Bash \u0438 \u0431\u043E\u043B\u044C\u0448\u0435 \u043A \u044D\u0442\u043E\u043C\u0443 \u043D\u0435 \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0439\u0441\u044F:
+- \xAB\u0414\u0430, \u0440\u0430\u0431\u043E\u0447\u0438\u0439\xBB: ${set2("work")}
+- \xAB\u041D\u0435\u0442, \u043B\u0438\u0447\u043D\u044B\u0439\xBB: ${set2("personal")}
+\u0415\u0441\u043B\u0438 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0435 \u043E\u0442\u0432\u0435\u0442\u0438\u043B \u0438\u043B\u0438 \u043E\u0442\u043A\u0430\u0437\u0430\u043B\u0441\u044F \u0432\u044B\u0431\u0438\u0440\u0430\u0442\u044C \u2014 \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0439 (\u0440\u0435\u043F\u043E \u043E\u0441\u0442\u0430\u043D\u0435\u0442\u0441\u044F \u043D\u0435\u0440\u0430\u0437\u043C\u0435\u0447\u0435\u043D\u043D\u044B\u043C \u0438 \u043D\u0435 \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u0445\u0432\u0430\u0442\u044B\u0432\u0430\u0442\u044C\u0441\u044F; \u043F\u043E\u043C\u0435\u043D\u044F\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0447\u0435\u0440\u0435\u0437 /standup repos). \u041F\u043E\u0441\u043B\u0435 \u044D\u0442\u043E\u0433\u043E \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438 \u043A \u0435\u0433\u043E \u043F\u0440\u043E\u0441\u044C\u0431\u0435.`;
 }
 
 // src/cli.ts
 async function main(argv) {
   const [command, arg] = argv;
+  const cliPath = process.argv[1] ?? __filename;
   try {
     switch (command) {
       case "session-start": {
-        const out = sessionStart(parseHookInput(await readStdin()), process.argv[1] ?? __filename);
+        const out = sessionStart(parseHookInput(await readStdin()), cliPath);
         if (out) process.stdout.write(JSON.stringify(out));
         return 0;
       }
       case "session-end":
-        sessionEnd(parseHookInput(await readStdin()), process.argv[1] ?? __filename);
+        sessionEnd(parseHookInput(await readStdin()), cliPath);
         return 0;
       case "capture":
         await runCapture(JSON.parse(arg ?? "{}"));
         return 0;
+      case "repos": {
+        const { code, out } = await reposCommand(argv.slice(1), cliPath);
+        process.stdout.write(JSON.stringify(out, null, 2) + "\n");
+        return code;
+      }
       default:
         log("error", "unknown command", { command });
         return 0;
     }
   } catch (err) {
-    log("error", "command failed", { command, error: err instanceof Error ? err.message : String(err) });
+    const error = err instanceof Error ? err.message : String(err);
+    log("error", "command failed", { command, error });
+    if (command === "repos") {
+      process.stdout.write(JSON.stringify({ error }) + "\n");
+      return 1;
+    }
     return 0;
   }
 }

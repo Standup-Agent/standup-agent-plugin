@@ -27,6 +27,8 @@ export const CAPTURE = {
   recoverMaxSessions: 50,
   /** Commits after the last transcript entry still count to the session (commit right before /exit). */
   commitSlackMinutes: 5,
+  /** At most this many sessions are captured right after repos are marked work (task 3). */
+  backfillMaxSessions: 200,
   maxCommitsPerBranch: 100,
   maxFilesPerBranch: 200,
   maxCommitMessageBytes: 1024,

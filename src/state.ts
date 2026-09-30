@@ -14,6 +14,10 @@ export type RepoKind = 'work' | 'personal';
 export interface State {
   /** Repo marking, written by task 3. Key: absolute repo top level (`git rev-parse --show-toplevel`). */
   repos?: Record<string, RepoKind>;
+  /** Team the developer joined (task 4). Its work orgs mark repos as work without a question. */
+  team?: { name?: string; work_orgs?: string[] };
+  /** Repos we already asked about on SessionStart: path → ISO time. Asked at most once. */
+  repos_asked?: Record<string, string>;
   /** When the last capture finished (ISO). */
   last_capture_at?: string;
   /** session_id → transcript mtime (ms) at its last capture. SessionStart recovery compares against it. */
@@ -93,5 +97,26 @@ export function recordCapture(sessionId: string, transcriptMtimeMs: number, now 
     for (const [id, mtime] of Object.entries(captures)) if (mtime < floor) delete captures[id];
     s.captures = captures;
     s.last_capture_at = now.toISOString();
+  });
+}
+
+/** Set work/personal for several repos at once. Returns the paths that became `work` just now. */
+export function setRepoKinds(kinds: Record<string, RepoKind>): string[] {
+  const becameWork: string[] = [];
+  updateState((s) => {
+    const repos = { ...(s.repos ?? {}) };
+    for (const [path, kind] of Object.entries(kinds)) {
+      if (kind === 'work' && repos[path] !== 'work') becameWork.push(path);
+      repos[path] = kind;
+    }
+    s.repos = repos;
+  });
+  return becameWork;
+}
+
+/** Remember that we asked about a repo, so SessionStart never asks again. */
+export function markRepoAsked(path: string, now = new Date()): void {
+  updateState((s) => {
+    s.repos_asked = { ...(s.repos_asked ?? {}), [path]: now.toISOString() };
   });
 }

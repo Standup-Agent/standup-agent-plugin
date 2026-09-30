@@ -18,19 +18,21 @@ plugin/                          # ← только это ставится по
   .claude-plugin/plugin.json     # манифест
   hooks/hooks.json               # SessionStart, SessionEnd → node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js <cmd>
   skills/join/SKILL.md           # (задача 4) узнаёт ссылку standupagent.ai/join/<CODE>
-  skills/standup/SKILL.md        # (задача 2) /standup [repos|join <CODE>|leave], показ + 4 опции
+  skills/standup/SKILL.md        # /standup: сейчас — разметка репо (repos, repos scan); задача 2 добавит показ стендапа
   agents/standup-synth.md        # (задача 1) субагент синтеза: возвращает только готовый стендап
   prompts/standup.fallback.md    # (задача 2) запасная копия промпта синтеза
   dist/cli.js                    # собранный бандл, коммитится
 src/
-  cli.ts                 # точка входа: session-start | session-end | capture
+  cli.ts                 # точка входа: session-start | session-end | capture | repos
+  commands/repos.ts      # repos scan | set <path>=work|personal | list — вызывает Claude через Bash, печатает JSON
   hookio.ts              # чтение и разбор stdin хука
   hooks/                 # session-start.ts, session-end.ts (только спавнит воркер)
   capture/worker.ts      # отсоединённый воркер после SessionEnd
+  capture/discover.ts    # поиск транскриптов репо по ~/.claude/projects (страховка, дозапись после разметки)
   capture/transcript.ts  # (задача 1) ЕДИНСТВЕННОЕ место, знающее формат транскрипта
   capture/git.ts         # (задача 1)
   secrets.ts             # (задача 1) фильтр секретов перед записью в склад
-  repos.ts               # (задача 3) скан ~/.claude/projects, рабочий/личный
+  repos.ts               # скан ~/.claude/projects, remote → организация команды, repoOf()
   store.ts / state.ts    # склад дайджестов с TTL; state.json и блокировки
   api.ts                 # клиент сервера, офлайн-очередь
   config.ts              # все [ДЕФОЛТ]-значения (DEFAULTS) и лимиты захвата, которых нет на доске (CAPTURE)
@@ -60,6 +62,7 @@ prompt-cache.json                  # {version, text, fetched_at}, кэш на д
 - Формат транскриптов не документирован, поэтому парсер живёт только в `capture/transcript.ts`, падает мягко и логирует нераспознанное.
 - Из транскрипта берём только тексты пользователя и Claude, без вывода инструментов и диффов. Лимит — десятки КБ на сессию.
 - Из `~/.claude.json` читаем только `oauthAccount.displayName` и `emailAddress`. Файл содержит токены: не логировать, не копировать. Если полей нет, берём `git config user.name/email`.
+- CLI, который запускает Claude через Bash, не получает `CLAUDE_PLUGIN_DATA` из окружения. В тексте скилла путь подставляется как `${CLAUDE_PLUGIN_DATA}` (проверено), а в тексте от хука его передаёт `cliCommand()`.
 - Неразмеченный репо не захватывается. Директории без git пропускаем. Ключ разметки в `state.repos` — вывод `git rev-parse --show-toplevel`; worktree засчитывается по основному checkout.
 - Страховка на SessionStart только читает каталоги и `stat`, содержимое транскриптов не открывает; найденное отдаёт отсоединённому воркеру `capture '<json-массив jobs>'`.
 

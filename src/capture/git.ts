@@ -55,6 +55,18 @@ export function mainWorktreeRoot(root: string): string | null {
   return main === root ? null : main;
 }
 
+/** URLs of all remotes (`remote.<name>.url`), origin first. */
+export function gitConfigRemotes(root: string): string[] {
+  const out = git(root, ['config', '--get-regexp', '^remote\\..*\\.url$']) ?? '';
+  const pairs = out
+    .split('\n')
+    .map((l) => /^remote\.(.+)\.url (.+)$/.exec(l.trim()))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => ({ name: m[1]!, url: m[2]! }));
+  pairs.sort((a, b) => Number(b.name === 'origin') - Number(a.name === 'origin'));
+  return pairs.map((p) => p.url);
+}
+
 /** Currently checked-out branch; null when detached. */
 export function currentBranch(cwd: string): string | null {
   return git(cwd, ['symbolic-ref', '--short', '-q', 'HEAD'])?.trim() || null;
