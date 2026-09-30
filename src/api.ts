@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { apiBaseUrl, NET } from './config.js';
+import { DEFAULT_API_BASE, NET } from './config.js';
 import { writeFileAtomic } from './fsutil.js';
 import { log } from './log.js';
 import { paths } from './paths.js';
@@ -33,13 +33,30 @@ export interface Report {
 
 type QueueItem = { kind: 'report'; body: Report } | { kind: 'event'; body: { type: EventType; ts: string } };
 
-export function memberToken(): string | null {
+/** auth.json: written at join. Never logged or copied. */
+export interface Auth {
+  member_token: string;
+  member_id: string;
+  /** Server the invite came from, e.g. https://standupagent.ai/api. */
+  api_base: string;
+}
+
+export function readAuth(): Partial<Auth> {
   try {
-    const t = (JSON.parse(readFileSync(paths.auth(), 'utf8')) as { member_token?: unknown }).member_token;
-    return typeof t === 'string' && t !== '' ? t : null;
+    return JSON.parse(readFileSync(paths.auth(), 'utf8')) as Partial<Auth>;
   } catch {
-    return null;
+    return {};
   }
+}
+
+export function memberToken(): string | null {
+  const t = readAuth().member_token;
+  return typeof t === 'string' && t !== '' ? t : null;
+}
+
+/** STANDUP_AGENT_API_URL (tests, staging) → the server we joined → the default. */
+export function apiBaseUrl(): string {
+  return process.env.STANDUP_AGENT_API_URL ?? readAuth().api_base ?? DEFAULT_API_BASE;
 }
 
 /** Queue a report; returns its queue file. The report id makes a retry idempotent on the server. */

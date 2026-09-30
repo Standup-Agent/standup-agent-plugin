@@ -23,7 +23,7 @@ __export(cli_exports, {
   main: () => main
 });
 module.exports = __toCommonJS(cli_exports);
-var import_node_path16 = require("node:path");
+var import_node_path18 = require("node:path");
 
 // src/capture/worker.ts
 var import_node_fs6 = require("node:fs");
@@ -74,7 +74,7 @@ var NET = {
   /** The server prompt is cached this long. */
   promptCacheHours: 24
 };
-var apiBaseUrl = () => process.env.STANDUP_AGENT_API_URL ?? "https://standupagent.ai/api";
+var DEFAULT_API_BASE = "https://standupagent.ai/api";
 
 // src/log.ts
 var import_node_fs = require("node:fs");
@@ -820,13 +820,19 @@ function groupByBranch(messages, fallback2) {
 var import_node_crypto2 = require("node:crypto");
 var import_node_fs7 = require("node:fs");
 var import_node_path8 = require("node:path");
-function memberToken() {
+function readAuth() {
   try {
-    const t = JSON.parse((0, import_node_fs7.readFileSync)(paths.auth(), "utf8")).member_token;
-    return typeof t === "string" && t !== "" ? t : null;
+    return JSON.parse((0, import_node_fs7.readFileSync)(paths.auth(), "utf8"));
   } catch {
-    return null;
+    return {};
   }
+}
+function memberToken() {
+  const t = readAuth().member_token;
+  return typeof t === "string" && t !== "" ? t : null;
+}
+function apiBaseUrl() {
+  return process.env.STANDUP_AGENT_API_URL ?? readAuth().api_base ?? DEFAULT_API_BASE;
 }
 function enqueueReport(report) {
   return enqueue({ kind: "report", body: report });
@@ -1105,14 +1111,124 @@ function backfill(repos, cliPath, now) {
   return jobs.length;
 }
 
+// src/commands/team.ts
+var import_node_fs11 = require("node:fs");
+var import_node_path13 = require("node:path");
+
+// src/identity.ts
+var import_node_child_process3 = require("node:child_process");
+var import_node_fs10 = require("node:fs");
+var import_node_os2 = require("node:os");
+var import_node_path12 = require("node:path");
+function suggestIdentity() {
+  const file = process.env.CLAUDE_CONFIG_DIR ? (0, import_node_path12.join)(process.env.CLAUDE_CONFIG_DIR, ".claude.json") : (0, import_node_path12.join)((0, import_node_os2.homedir)(), ".claude.json");
+  try {
+    const acc = JSON.parse((0, import_node_fs10.readFileSync)(file, "utf8")).oauthAccount;
+    const name2 = typeof acc?.displayName === "string" ? acc.displayName : null;
+    const email2 = typeof acc?.emailAddress === "string" ? acc.emailAddress : null;
+    if (name2 || email2) return { name: name2, email: email2, source: "claude" };
+  } catch {
+  }
+  const git3 = (key) => {
+    try {
+      return (0, import_node_child_process3.execFileSync)("git", ["config", "--global", key], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).trim() || null;
+    } catch {
+      return null;
+    }
+  };
+  const name = git3("user.name");
+  const email = git3("user.email");
+  return { name, email, source: name || email ? "git" : "none" };
+}
+
+// src/commands/team.ts
+function parseInvite(link) {
+  const s = link.trim().replace(/[.,;!?»")\]]+$/, "");
+  const m = /^(?:(https?):\/\/)?([a-z0-9.-]+(?::\d+)?)\/join\/([A-Za-z0-9]{10,})$/i.exec(s);
+  if (m) {
+    const scheme = m[1] ?? (/^(localhost|127\.0\.0\.1)(:|$)/.test(m[2]) ? "http" : "https");
+    return { code: m[3].toUpperCase(), apiBase: `${scheme}://${m[2]}/api` };
+  }
+  if (/^[A-Za-z0-9]{10,}$/.test(s)) return { code: s.toUpperCase(), apiBase: process.env.STANDUP_AGENT_API_URL ?? DEFAULT_API_BASE };
+  return null;
+}
+async function request(url, init = {}) {
+  try {
+    const r = await fetch(url, { ...init, signal: AbortSignal.timeout(NET.timeoutMs) });
+    const body = await r.json().catch(() => ({}));
+    return { status: r.status, body };
+  } catch {
+    return null;
+  }
+}
+async function joinInfo(link) {
+  const inv = parseInvite(link);
+  if (!inv) return { code: 1, out: { error: "\u041D\u0435 \u043F\u043E\u0445\u043E\u0436\u0435 \u043D\u0430 \u0438\u043D\u0432\u0430\u0439\u0442-\u0441\u0441\u044B\u043B\u043A\u0443 Standup Agent (\u2026/join/<CODE>)." } };
+  const r = await request(`${inv.apiBase}/invites/${inv.code}`);
+  if (!r) return { code: 1, out: { error: `\u0421\u0435\u0440\u0432\u0435\u0440 ${inv.apiBase} \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D. \u041F\u0440\u043E\u0432\u0435\u0440\u044C \u0441\u0435\u0442\u044C \u0438 \u043F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u0435\u0449\u0451 \u0440\u0430\u0437.` } };
+  if (r.status === 404) return { code: 1, out: { error: "\u0421\u0441\u044B\u043B\u043A\u0430 \u043D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0438\u043B\u0438 \u0435\u0451 \u043E\u0442\u043E\u0437\u0432\u0430\u043B\u0438 \u2014 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u0443 \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430 \u043D\u043E\u0432\u0443\u044E." } };
+  if (r.status !== 200) return { code: 1, out: { error: `\u0421\u0435\u0440\u0432\u0435\u0440 \u043E\u0442\u0432\u0435\u0442\u0438\u043B ${r.status}.` } };
+  const current = readState().team?.name ?? null;
+  return {
+    code: 0,
+    out: {
+      team_name: r.body.team_name,
+      suggested: suggestIdentity(),
+      // MVP: one team per developer; joining another one leaves the current.
+      current_team: current,
+      leaves_current_team: current !== null && current !== r.body.team_name
+    }
+  };
+}
+async function joinTeam(link, name, email, now = /* @__PURE__ */ new Date()) {
+  const inv = parseInvite(link);
+  if (!inv) return { code: 1, out: { error: "\u041D\u0435 \u043F\u043E\u0445\u043E\u0436\u0435 \u043D\u0430 \u0438\u043D\u0432\u0430\u0439\u0442-\u0441\u0441\u044B\u043B\u043A\u0443 Standup Agent." } };
+  if (!name.trim() || !/^\S+@\S+\.\S+$/.test(email.trim())) return { code: 1, out: { error: "\u041D\u0443\u0436\u043D\u044B \u0438\u043C\u044F \u0438 email." } };
+  const r = await request(`${inv.apiBase}/join`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: inv.code, display_name: name.trim(), email: email.trim() })
+  });
+  if (!r) return { code: 1, out: { error: "\u0421\u0435\u0440\u0432\u0435\u0440 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u0435\u0449\u0451 \u0440\u0430\u0437." } };
+  if (r.status === 404) return { code: 1, out: { error: "\u0421\u0441\u044B\u043B\u043A\u0430 \u043D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0438\u043B\u0438 \u0435\u0451 \u043E\u0442\u043E\u0437\u0432\u0430\u043B\u0438 \u2014 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u0443 \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430 \u043D\u043E\u0432\u0443\u044E." } };
+  if (r.status === 429) return { code: 1, out: { error: "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u043D\u043E\u0433\u043E \u043F\u043E\u043F\u044B\u0442\u043E\u043A \u2014 \u043F\u043E\u0434\u043E\u0436\u0434\u0438 \u043C\u0438\u043D\u0443\u0442\u0443." } };
+  if (r.status !== 200 || typeof r.body.member_token !== "string") return { code: 1, out: { error: `\u0421\u0435\u0440\u0432\u0435\u0440 \u043E\u0442\u0432\u0435\u0442\u0438\u043B ${r.status}.` } };
+  const auth = { member_token: r.body.member_token, member_id: String(r.body.member_id), api_base: inv.apiBase };
+  writeFileAtomic(paths.auth(), JSON.stringify(auth));
+  const workOrgs = Array.isArray(r.body.work_orgs) ? r.body.work_orgs.filter((o) => typeof o === "string") : [];
+  updateState((s) => {
+    if (s.team?.name && s.team.name !== r.body.team_name) {
+      s.repos_asked = {};
+      s.standup = {};
+    }
+    s.team = { name: String(r.body.team_name), work_orgs: workOrgs, joined_at: now.toISOString() };
+  });
+  log("info", "team: joined");
+  return { code: 0, out: { team_name: r.body.team_name, work_orgs: workOrgs, next: "\u0422\u0435\u043F\u0435\u0440\u044C \u043F\u0435\u0440\u0432\u0438\u0447\u043D\u0430\u044F \u0440\u0430\u0437\u043C\u0435\u0442\u043A\u0430 \u0440\u0435\u043F\u043E: repos scan." } };
+}
+async function leave() {
+  const token = memberToken();
+  if (token) {
+    const r = await request(`${apiBaseUrl()}/me`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    if (!r || r.status !== 204 && r.status !== 401) {
+      return { code: 1, out: { error: "\u0421\u0435\u0440\u0432\u0435\u0440 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u2014 \u0434\u0430\u043D\u043D\u044B\u0435 \u043D\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435 \u043D\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u044B. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u043F\u043E\u0437\u0436\u0435, \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u0442\u0440\u043E\u0433\u0430\u043B." } };
+    }
+  }
+  for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), (0, import_node_path13.join)(dataDir(), "standup-materials.json"), paths.state()]) {
+    (0, import_node_fs11.rmSync)(p, { recursive: true, force: true });
+  }
+  log("info", "team: left");
+  return { code: 0, out: { left: true, note: "\u0422\u044B \u0432\u044B\u0448\u0435\u043B \u0438\u0437 \u043A\u043E\u043C\u0430\u043D\u0434\u044B. \u0422\u0432\u043E\u0438 \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u044B \u0443\u0434\u0430\u043B\u0435\u043D\u044B \u043D\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435, \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0435 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B \u0438 \u0440\u0430\u0437\u043C\u0435\u0442\u043A\u0430 \u0440\u0435\u043F\u043E \u2014 \u043D\u0430 \u044D\u0442\u043E\u043C \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0435." } };
+}
+
 // src/standup/commands.ts
 var import_node_crypto3 = require("node:crypto");
-var import_node_fs12 = require("node:fs");
-var import_node_path14 = require("node:path");
+var import_node_fs14 = require("node:fs");
+var import_node_path16 = require("node:path");
 
 // src/prompt.ts
-var import_node_fs10 = require("node:fs");
-var import_node_path12 = require("node:path");
+var import_node_fs12 = require("node:fs");
+var import_node_path14 = require("node:path");
 async function standupPrompt(pluginRoot, now = Date.now()) {
   const cached = readCache();
   if (cached && now - cached.fetched_at < NET.promptCacheHours * 36e5) return cached;
@@ -1124,13 +1240,13 @@ async function standupPrompt(pluginRoot, now = Date.now()) {
   return cached ?? fallback(pluginRoot);
 }
 function fallback(pluginRoot) {
-  const raw = (0, import_node_fs10.readFileSync)((0, import_node_path12.join)(pluginRoot, "prompts", "standup.fallback.md"), "utf8");
+  const raw = (0, import_node_fs12.readFileSync)((0, import_node_path14.join)(pluginRoot, "prompts", "standup.fallback.md"), "utf8");
   const m = /^<!--\s*version:\s*(\S+)\s*-->\s*\n/.exec(raw);
   return { version: m?.[1] ?? "fallback", text: m ? raw.slice(m[0].length) : raw };
 }
 function readCache() {
   try {
-    const c = JSON.parse((0, import_node_fs10.readFileSync)(paths.promptCache(), "utf8"));
+    const c = JSON.parse((0, import_node_fs12.readFileSync)(paths.promptCache(), "utf8"));
     return typeof c.text === "string" && typeof c.version === "string" && typeof c.fetched_at === "number" ? c : null;
   } catch {
     return null;
@@ -1138,19 +1254,19 @@ function readCache() {
 }
 
 // src/standup/materials.ts
-var import_node_child_process3 = require("node:child_process");
-var import_node_fs11 = require("node:fs");
-var import_node_path13 = require("node:path");
+var import_node_child_process4 = require("node:child_process");
+var import_node_fs13 = require("node:fs");
+var import_node_path15 = require("node:path");
 var PART_CHARS = 25e3;
 function rawFilesSince(fromMs) {
   const out = [];
   for (const repo of dirs(paths.digests())) {
-    for (const branch of dirs((0, import_node_path13.join)(paths.digests(), repo))) {
-      const raw = (0, import_node_path13.join)(paths.digests(), repo, branch, "raw");
+    for (const branch of dirs((0, import_node_path15.join)(paths.digests(), repo))) {
+      const raw = (0, import_node_path15.join)(paths.digests(), repo, branch, "raw");
       for (const f of files(raw)) {
         if (!f.endsWith(".json")) continue;
         try {
-          if ((0, import_node_fs11.statSync)((0, import_node_path13.join)(raw, f)).mtimeMs > fromMs) out.push((0, import_node_path13.join)(raw, f));
+          if ((0, import_node_fs13.statSync)((0, import_node_path15.join)(raw, f)).mtimeMs > fromMs) out.push((0, import_node_path15.join)(raw, f));
         } catch {
         }
       }
@@ -1162,7 +1278,7 @@ function loadCaptures(fromMs) {
   const caps = [];
   for (const f of rawFilesSince(fromMs)) {
     try {
-      caps.push(JSON.parse((0, import_node_fs11.readFileSync)(f, "utf8")));
+      caps.push(JSON.parse((0, import_node_fs13.readFileSync)(f, "utf8")));
     } catch {
     }
   }
@@ -1189,7 +1305,7 @@ function outsideCommits(repos, from, known, limitPerRepo = CAPTURE.maxCommitsPer
     for (const rec of (log2 ?? "").split("")) {
       const [sha, ref, ts, subject] = rec.trim().split("");
       if (!sha || !ts || known.has(sha)) continue;
-      out.push({ repo: (0, import_node_path13.basename)(repo), branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
+      out.push({ repo: (0, import_node_path15.basename)(repo), branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
       if (++n >= limitPerRepo) break;
     }
   }
@@ -1282,7 +1398,7 @@ function split(lines) {
 }
 function git2(cwd, args) {
   try {
-    return (0, import_node_child_process3.execFileSync)("git", args, {
+    return (0, import_node_child_process4.execFileSync)("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -1295,14 +1411,14 @@ function git2(cwd, args) {
 }
 var dirs = (d) => {
   try {
-    return (0, import_node_fs11.readdirSync)(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    return (0, import_node_fs13.readdirSync)(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {
     return [];
   }
 };
 var files = (d) => {
   try {
-    return (0, import_node_fs11.readdirSync)(d);
+    return (0, import_node_fs13.readdirSync)(d);
   } catch {
     return [];
   }
@@ -1328,7 +1444,7 @@ function gate(state, now) {
 
 // src/standup/commands.ts
 var H = 36e5;
-var partsFile = () => (0, import_node_path14.join)(dataDir(), "standup-materials.json");
+var partsFile = () => (0, import_node_path16.join)(dataDir(), "standup-materials.json");
 async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date()) {
   const [sub, ...rest] = args;
   switch (sub) {
@@ -1371,7 +1487,7 @@ async function prepare(args, pluginRoot, now) {
     enqueueEvent("shown", now);
   } else {
     try {
-      parts = JSON.parse((0, import_node_fs12.readFileSync)(partsFile(), "utf8"));
+      parts = JSON.parse((0, import_node_fs14.readFileSync)(partsFile(), "utf8"));
     } catch {
       return { code: 1, out: "\u041D\u0435\u0442 \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043B\u0435\u043D\u043D\u044B\u0445 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u043E\u0432: \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438 standup prepare \u0431\u0435\u0437 --part." };
     }
@@ -1445,7 +1561,7 @@ function parseHookInput(raw) {
 }
 
 // src/hooks/session-end.ts
-var import_node_child_process4 = require("node:child_process");
+var import_node_child_process5 = require("node:child_process");
 function sessionEnd(input, cliPath) {
   const job = JSON.stringify({
     session_id: input.session_id,
@@ -1453,13 +1569,13 @@ function sessionEnd(input, cliPath) {
     cwd: input.cwd,
     reason: input.reason
   });
-  (0, import_node_child_process4.spawn)(process.execPath, [cliPath, "capture", job], { detached: true, stdio: "ignore" }).unref();
+  (0, import_node_child_process5.spawn)(process.execPath, [cliPath, "capture", job], { detached: true, stdio: "ignore" }).unref();
 }
 
 // src/hooks/session-start.ts
-var import_node_path15 = require("node:path");
-var import_node_child_process5 = require("node:child_process");
-var import_node_fs13 = require("node:fs");
+var import_node_path17 = require("node:path");
+var import_node_child_process6 = require("node:child_process");
+var import_node_fs15 = require("node:fs");
 function sessionStart(input, cliPath, now = /* @__PURE__ */ new Date()) {
   const outs = [];
   try {
@@ -1478,7 +1594,7 @@ function sessionStart(input, cliPath, now = /* @__PURE__ */ new Date()) {
   }
   try {
     outs.push(standupCheck(input, now));
-    if (queueNotEmpty()) (0, import_node_child_process5.spawn)(process.execPath, [cliPath, "flush"], { detached: true, stdio: "ignore" }).unref();
+    if (queueNotEmpty()) (0, import_node_child_process6.spawn)(process.execPath, [cliPath, "flush"], { detached: true, stdio: "ignore" }).unref();
   } catch (err) {
     log("error", "session-start: standup check failed", { error: err instanceof Error ? err.message : String(err) });
   }
@@ -1513,7 +1629,7 @@ function standupCheck(input, now, state = readState()) {
 }
 function queueNotEmpty() {
   try {
-    return (0, import_node_fs13.readdirSync)(paths.queue()).some((f) => f.endsWith(".json") && !f.startsWith("."));
+    return (0, import_node_fs15.readdirSync)(paths.queue()).some((f) => f.endsWith(".json") && !f.startsWith("."));
   } catch {
     return false;
   }
@@ -1540,7 +1656,7 @@ function findMissedSessions(input, now = Date.now()) {
   });
 }
 function projectsDirFor(input) {
-  return input.transcript_path ? (0, import_node_path15.dirname)((0, import_node_path15.dirname)(input.transcript_path)) : paths.claudeProjects();
+  return input.transcript_path ? (0, import_node_path17.dirname)((0, import_node_path17.dirname)(input.transcript_path)) : paths.claudeProjects();
 }
 function newRepoCheck(input, cliPath, state = readState()) {
   if (!state.team || !input.cwd) return null;
@@ -1600,8 +1716,15 @@ async function main(argv) {
         return code;
       }
       case "standup": {
-        const { code, out } = await standupCommand(argv.slice(1), (0, import_node_path16.dirname)((0, import_node_path16.dirname)(cliPath)));
+        const { code, out } = await standupCommand(argv.slice(1), (0, import_node_path18.dirname)((0, import_node_path18.dirname)(cliPath)));
         process.stdout.write(out + "\n");
+        return code;
+      }
+      case "join-info":
+      case "join":
+      case "leave": {
+        const { code, out } = command === "join-info" ? await joinInfo(arg ?? "") : command === "join" ? await joinTeam(arg ?? "", argv[2] ?? "", argv[3] ?? "") : await leave();
+        process.stdout.write(JSON.stringify(out, null, 2) + "\n");
         return code;
       }
       case "flush": {
@@ -1616,7 +1739,7 @@ async function main(argv) {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     log("error", "command failed", { command, error });
-    if (command === "repos" || command === "standup") {
+    if (["repos", "standup", "join", "join-info", "leave"].includes(command ?? "")) {
       process.stdout.write(JSON.stringify({ error }) + "\n");
       return 1;
     }

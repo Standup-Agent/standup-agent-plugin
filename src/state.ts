@@ -15,7 +15,7 @@ export interface State {
   /** Repo marking, written by task 3. Key: absolute repo top level (`git rev-parse --show-toplevel`). */
   repos?: Record<string, RepoKind>;
   /** Team the developer joined (task 4). Its work orgs mark repos as work without a question. */
-  team?: { name?: string; work_orgs?: string[] };
+  team?: { name?: string; work_orgs?: string[]; joined_at?: string };
   /** Repos we already asked about on SessionStart: path → ISO time. Asked at most once. */
   repos_asked?: Record<string, string>;
   /** End of the period covered by the last sent standup (ISO). The next standup starts here. */

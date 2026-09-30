@@ -2,6 +2,7 @@ import { dirname } from 'node:path';
 import { runCapture, type CaptureJob } from './capture/worker.js';
 import { flush } from './api.js';
 import { reposCommand } from './commands/repos.js';
+import { joinInfo, joinTeam, leave } from './commands/team.js';
 import { standupCommand } from './standup/commands.js';
 import { parseHookInput, readStdin } from './hookio.js';
 import { sessionEnd } from './hooks/session-end.js';
@@ -45,6 +46,14 @@ export async function main(argv: string[]): Promise<number> {
         process.stdout.write(out + '\n');
         return code;
       }
+      case 'join-info':
+      case 'join':
+      case 'leave': {
+        const { code, out } =
+          command === 'join-info' ? await joinInfo(arg ?? '') : command === 'join' ? await joinTeam(arg ?? '', argv[2] ?? '', argv[3] ?? '') : await leave();
+        process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+        return code;
+      }
       case 'flush': {
         const r = await flush();
         if (r.sent > 0 || r.stopped === 'auth') log('info', 'queue: flush', { ...r });
@@ -57,7 +66,7 @@ export async function main(argv: string[]): Promise<number> {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     log('error', 'command failed', { command, error });
-    if (command === 'repos' || command === 'standup') {
+    if (['repos', 'standup', 'join', 'join-info', 'leave'].includes(command ?? '')) {
       process.stdout.write(JSON.stringify({ error }) + '\n');
       return 1;
     }

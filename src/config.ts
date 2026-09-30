@@ -49,5 +49,5 @@ export const NET = {
   promptCacheHours: 24,
 } as const;
 
-/** Server base URL; read on every call so tests and staging can point elsewhere. */
-export const apiBaseUrl = () => process.env.STANDUP_AGENT_API_URL ?? 'https://standupagent.ai/api';
+/** Default server; the invite link's host replaces it at join (see api.ts apiBaseUrl). */
+export const DEFAULT_API_BASE = 'https://standupagent.ai/api';
