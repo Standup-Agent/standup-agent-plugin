@@ -85,7 +85,8 @@ describe('hooks end to end', () => {
       hook_event_name: 'SessionStart',
     });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('');
+    // The hook may also announce the standup (the repo has fresh commits); whatever it prints is hook JSON.
+    if (r.stdout !== '') expect(JSON.parse(r.stdout)).toBeTypeOf('object');
     process.env.CLAUDE_PLUGIN_DATA = s.data;
     const file = rawPath(s.root, 'feature/PAY-42-webhooks', killed);
     expect(await waitFor(file)).toBe(true);

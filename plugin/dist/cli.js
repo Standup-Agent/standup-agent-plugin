@@ -23,6 +23,7 @@ __export(cli_exports, {
   main: () => main
 });
 module.exports = __toCommonJS(cli_exports);
+var import_node_path16 = require("node:path");
 
 // src/capture/worker.ts
 var import_node_fs6 = require("node:fs");
@@ -40,6 +41,8 @@ var DEFAULTS = {
   snoozeHours: 2,
   /** Another terminal won't show the standup while one is showing it. */
   showLockMinutes: 10,
+  /** Materials handed to the synthesis subagent are cut to this many characters (keeps its context small). */
+  synthMaxChars: 1e5,
   /** Repo scan window when joining a team. */
   repoScanDays: 30,
   /** Transcripts re-captured right after join, to show a first standup immediately. */
@@ -64,7 +67,14 @@ var CAPTURE = {
   stateLockWaitMs: 2e3,
   stateLockStaleMs: 1e4
 };
-var API_BASE_URL = process.env.STANDUP_AGENT_API_URL ?? "https://standupagent.ai/api";
+var NET = {
+  timeoutMs: 5e3,
+  /** Queued items older than this are dropped (a week of offline is not worth replaying). */
+  queueMaxAgeDays: 14,
+  /** The server prompt is cached this long. */
+  promptCacheHours: 24
+};
+var apiBaseUrl = () => process.env.STANDUP_AGENT_API_URL ?? "https://standupagent.ai/api";
 
 // src/log.ts
 var import_node_fs = require("node:fs");
@@ -84,6 +94,7 @@ var paths = {
   auth: () => (0, import_node_path.join)(dataDir(), "auth.json"),
   digests: () => (0, import_node_path.join)(dataDir(), "digests"),
   queue: () => (0, import_node_path.join)(dataDir(), "queue"),
+  promptCache: () => (0, import_node_path.join)(dataDir(), "prompt-cache.json"),
   logDir: () => (0, import_node_path.join)(dataDir(), "log"),
   claudeProjects: () => (0, import_node_path.join)(claudeDir(), "projects")
 };
@@ -493,28 +504,28 @@ function branchActivity(root, branch, from, to) {
       });
     }
   }
-  const files = /* @__PURE__ */ new Set();
-  for (const c of commits) for (const f of c.files) files.add(f);
-  if (currentBranch(root) === branch) for (const f of uncommittedFiles(root)) files.add(f);
+  const files2 = /* @__PURE__ */ new Set();
+  for (const c of commits) for (const f of c.files) files2.add(f);
+  if (currentBranch(root) === branch) for (const f of uncommittedFiles(root)) files2.add(f);
   return {
     branch,
     commits,
-    files: [...files].slice(0, CAPTURE.maxFilesPerBranch),
+    files: [...files2].slice(0, CAPTURE.maxFilesPerBranch),
     tickets: findTickets(branch, ...commits.map((c) => c.message))
   };
 }
 function uncommittedFiles(root) {
   const out = git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
   if (!out) return [];
-  const files = [];
+  const files2 = [];
   const parts = out.split("\0");
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     if (p.length < 4) continue;
-    files.push(p.slice(3));
+    files2.push(p.slice(3));
     if (p[0] === "R" || p[0] === "C") i++;
   }
-  return files;
+  return files2;
 }
 
 // src/capture/transcript.ts
@@ -793,42 +804,129 @@ function markedWorkRepo(root, state) {
   const main2 = mainWorktreeRoot(root);
   return main2 && isWorkRepo(main2, state) ? main2 : null;
 }
-function groupByBranch(messages, fallback) {
+function groupByBranch(messages, fallback2) {
   const groups = /* @__PURE__ */ new Map();
   for (const m of messages) {
-    const b = m.branch && m.branch !== "HEAD" ? m.branch : fallback;
+    const b = m.branch && m.branch !== "HEAD" ? m.branch : fallback2;
     let list2 = groups.get(b);
     if (!list2) groups.set(b, list2 = []);
     list2.push(m);
   }
-  if (groups.size === 0) groups.set(fallback, []);
+  if (groups.size === 0) groups.set(fallback2, []);
   return groups;
 }
 
+// src/api.ts
+var import_node_crypto2 = require("node:crypto");
+var import_node_fs7 = require("node:fs");
+var import_node_path8 = require("node:path");
+function memberToken() {
+  try {
+    const t = JSON.parse((0, import_node_fs7.readFileSync)(paths.auth(), "utf8")).member_token;
+    return typeof t === "string" && t !== "" ? t : null;
+  } catch {
+    return null;
+  }
+}
+function enqueueReport(report) {
+  return enqueue({ kind: "report", body: report });
+}
+function enqueueEvent(type, now = /* @__PURE__ */ new Date()) {
+  return enqueue({ kind: "event", body: { type, ts: now.toISOString() } });
+}
+var seq = 0;
+function enqueue(item) {
+  const file = (0, import_node_path8.join)(paths.queue(), `${Date.now().toString().padStart(15, "0")}-${String(seq++).padStart(6, "0")}-${item.kind}-${(0, import_node_crypto2.randomUUID)()}.json`);
+  writeFileAtomic(file, JSON.stringify(item));
+  return file;
+}
+async function flush(now = Date.now()) {
+  const files2 = queued();
+  const res = { sent: 0, left: files2.length };
+  if (files2.length === 0) return res;
+  const token = memberToken();
+  if (!token) return { ...res, stopped: "no_token" };
+  for (const file of files2) {
+    let item;
+    try {
+      if (now - (0, import_node_fs7.statSync)(file).mtimeMs > NET.queueMaxAgeDays * 864e5) {
+        (0, import_node_fs7.rmSync)(file, { force: true });
+        res.left--;
+        log("info", "queue: dropped stale item");
+        continue;
+      }
+      item = JSON.parse((0, import_node_fs7.readFileSync)(file, "utf8"));
+    } catch {
+      (0, import_node_fs7.rmSync)(file, { force: true });
+      res.left--;
+      continue;
+    }
+    const status = await post(item.kind === "report" ? "/reports" : "/events", item.body, token);
+    if (status === null) return { ...res, stopped: "network" };
+    if (status === 401) return { ...res, stopped: "auth" };
+    if (status >= 500) return { ...res, stopped: "network" };
+    if (status >= 400) log("error", "queue: item rejected", { kind: item.kind, status });
+    (0, import_node_fs7.rmSync)(file, { force: true });
+    res.left--;
+    if (status < 400) res.sent++;
+  }
+  return res;
+}
+function queued() {
+  try {
+    return (0, import_node_fs7.readdirSync)(paths.queue()).filter((f) => f.endsWith(".json") && !f.startsWith(".")).sort().map((f) => (0, import_node_path8.join)(paths.queue(), f));
+  } catch {
+    return [];
+  }
+}
+async function post(path, body, token) {
+  try {
+    const r = await fetch(apiBaseUrl() + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(NET.timeoutMs)
+    });
+    return r.status;
+  } catch {
+    return null;
+  }
+}
+async function getJSON(path) {
+  const token = memberToken();
+  if (!token) return null;
+  try {
+    const r = await fetch(apiBaseUrl() + path, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(NET.timeoutMs) });
+    return r.ok ? await r.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 // src/commands/repos.ts
-var import_node_path10 = require("node:path");
+var import_node_path11 = require("node:path");
 
 // src/capture/discover.ts
 var import_node_child_process2 = require("node:child_process");
-var import_node_fs7 = require("node:fs");
-var import_node_path8 = require("node:path");
+var import_node_fs8 = require("node:fs");
+var import_node_path9 = require("node:path");
 function projectDirName(path) {
   return path.replace(/[^a-zA-Z0-9]/g, "-");
 }
 function findSessions(o) {
-  const dirs = o.repos.map(projectDirName);
-  if (dirs.length === 0) return [];
+  const dirs2 = o.repos.map(projectDirName);
+  if (dirs2.length === 0) return [];
   const found = [];
   for (const dir of safeReaddir(o.projectsDir)) {
-    if (!dirs.some((r) => dir === r || dir.startsWith(`${r}-`))) continue;
-    for (const file of safeReaddir((0, import_node_path8.join)(o.projectsDir, dir))) {
+    if (!dirs2.some((r) => dir === r || dir.startsWith(`${r}-`))) continue;
+    for (const file of safeReaddir((0, import_node_path9.join)(o.projectsDir, dir))) {
       if (!file.endsWith(".jsonl")) continue;
-      const sessionId = (0, import_node_path8.basename)(file, ".jsonl");
+      const sessionId = (0, import_node_path9.basename)(file, ".jsonl");
       if (sessionId === o.exclude) continue;
-      const path = (0, import_node_path8.join)(o.projectsDir, dir, file);
+      const path = (0, import_node_path9.join)(o.projectsDir, dir, file);
       let mtime;
       try {
-        mtime = (0, import_node_fs7.statSync)(path).mtimeMs;
+        mtime = (0, import_node_fs8.statSync)(path).mtimeMs;
       } catch {
         continue;
       }
@@ -846,15 +944,15 @@ function spawnCapture(cliPath, jobs) {
 }
 function safeReaddir(dir) {
   try {
-    return (0, import_node_fs7.readdirSync)(dir);
+    return (0, import_node_fs8.readdirSync)(dir);
   } catch {
     return [];
   }
 }
 
 // src/repos.ts
-var import_node_fs8 = require("node:fs");
-var import_node_path9 = require("node:path");
+var import_node_fs9 = require("node:fs");
+var import_node_path10 = require("node:path");
 function normalizeRemote(url) {
   let u = url.trim();
   if (u === "") return null;
@@ -883,18 +981,18 @@ function matchesWorkOrg(remotes, workOrgs) {
   return remotes.some((r) => orgs.some((o) => r === o || r.startsWith(`${o}/`)));
 }
 function repoOf(cwd) {
-  if (!(0, import_node_fs8.existsSync)(cwd)) return null;
+  if (!(0, import_node_fs9.existsSync)(cwd)) return null;
   const root = repoRoot(cwd);
   if (!root) return null;
   const path = mainWorktreeRoot(root) ?? root;
   const remotes = [...new Set(gitConfigRemotes(path).map(normalizeRemote).filter((r) => r !== null))];
-  return { path, name: (0, import_node_path9.basename)(path), remotes };
+  return { path, name: (0, import_node_path10.basename)(path), remotes };
 }
 async function scanRepos(projectsDir, days, now = Date.now()) {
   const floor = now - days * 864e5;
   const byPath = /* @__PURE__ */ new Map();
   for (const dir of safeReaddir2(projectsDir)) {
-    const newest = newestTranscript((0, import_node_path9.join)(projectsDir, dir), floor);
+    const newest = newestTranscript((0, import_node_path10.join)(projectsDir, dir), floor);
     if (!newest) continue;
     const cwd = await readTranscriptCwd(newest.path);
     if (!cwd) continue;
@@ -921,9 +1019,9 @@ function newestTranscript(dir, floor) {
   let best = null;
   for (const f of safeReaddir2(dir)) {
     if (!f.endsWith(".jsonl")) continue;
-    const path = (0, import_node_path9.join)(dir, f);
+    const path = (0, import_node_path10.join)(dir, f);
     try {
-      const mtime = (0, import_node_fs8.statSync)(path).mtimeMs;
+      const mtime = (0, import_node_fs9.statSync)(path).mtimeMs;
       if (mtime >= floor && (!best || mtime > best.mtime)) best = { path, mtime };
     } catch {
     }
@@ -932,7 +1030,7 @@ function newestTranscript(dir, floor) {
 }
 function safeReaddir2(dir) {
   try {
-    return (0, import_node_fs8.readdirSync)(dir);
+    return (0, import_node_fs9.readdirSync)(dir);
   } catch {
     return [];
   }
@@ -976,7 +1074,7 @@ function set(pairs, cliPath, now) {
     const eq = p.lastIndexOf("=");
     const path = p.slice(0, eq);
     const kind = p.slice(eq + 1);
-    if (eq <= 0 || !(0, import_node_path10.isAbsolute)(path) || kind !== "work" && kind !== "personal") {
+    if (eq <= 0 || !(0, import_node_path11.isAbsolute)(path) || kind !== "work" && kind !== "personal") {
       return { code: 1, out: { error: `expected <absolute path>=work|personal, got: ${p}` } };
     }
     kinds[repoOf(path)?.path ?? path] = kind;
@@ -1007,6 +1105,333 @@ function backfill(repos, cliPath, now) {
   return jobs.length;
 }
 
+// src/standup/commands.ts
+var import_node_crypto3 = require("node:crypto");
+var import_node_fs12 = require("node:fs");
+var import_node_path14 = require("node:path");
+
+// src/prompt.ts
+var import_node_fs10 = require("node:fs");
+var import_node_path12 = require("node:path");
+async function standupPrompt(pluginRoot, now = Date.now()) {
+  const cached = readCache();
+  if (cached && now - cached.fetched_at < NET.promptCacheHours * 36e5) return cached;
+  const fresh = await getJSON("/prompts/standup");
+  if (fresh && typeof fresh.version === "string" && typeof fresh.text === "string") {
+    writeFileAtomic(paths.promptCache(), JSON.stringify({ ...fresh, fetched_at: now }));
+    return fresh;
+  }
+  return cached ?? fallback(pluginRoot);
+}
+function fallback(pluginRoot) {
+  const raw = (0, import_node_fs10.readFileSync)((0, import_node_path12.join)(pluginRoot, "prompts", "standup.fallback.md"), "utf8");
+  const m = /^<!--\s*version:\s*(\S+)\s*-->\s*\n/.exec(raw);
+  return { version: m?.[1] ?? "fallback", text: m ? raw.slice(m[0].length) : raw };
+}
+function readCache() {
+  try {
+    const c = JSON.parse((0, import_node_fs10.readFileSync)(paths.promptCache(), "utf8"));
+    return typeof c.text === "string" && typeof c.version === "string" && typeof c.fetched_at === "number" ? c : null;
+  } catch {
+    return null;
+  }
+}
+
+// src/standup/materials.ts
+var import_node_child_process3 = require("node:child_process");
+var import_node_fs11 = require("node:fs");
+var import_node_path13 = require("node:path");
+var PART_CHARS = 25e3;
+function rawFilesSince(fromMs) {
+  const out = [];
+  for (const repo of dirs(paths.digests())) {
+    for (const branch of dirs((0, import_node_path13.join)(paths.digests(), repo))) {
+      const raw = (0, import_node_path13.join)(paths.digests(), repo, branch, "raw");
+      for (const f of files(raw)) {
+        if (!f.endsWith(".json")) continue;
+        try {
+          if ((0, import_node_fs11.statSync)((0, import_node_path13.join)(raw, f)).mtimeMs > fromMs) out.push((0, import_node_path13.join)(raw, f));
+        } catch {
+        }
+      }
+    }
+  }
+  return out;
+}
+function loadCaptures(fromMs) {
+  const caps = [];
+  for (const f of rawFilesSince(fromMs)) {
+    try {
+      caps.push(JSON.parse((0, import_node_fs11.readFileSync)(f, "utf8")));
+    } catch {
+    }
+  }
+  return caps.sort((a, b) => a.period.from.localeCompare(b.period.from));
+}
+function outsideCommits(repos, from, known, limitPerRepo = CAPTURE.maxCommitsPerBranch) {
+  const out = [];
+  for (const repo of repos) {
+    const email = git2(repo, ["config", "user.email"])?.trim();
+    if (!email) continue;
+    const log2 = git2(repo, [
+      "log",
+      "--branches",
+      "--no-merges",
+      "--source",
+      `--since=${from.toISOString()}`,
+      `--author=<${email}>`,
+      "--regexp-ignore-case",
+      "--fixed-strings",
+      `--max-count=${limitPerRepo + known.size}`,
+      "--format=%H%x1f%S%x1f%aI%x1f%s%x1e"
+    ]);
+    let n = 0;
+    for (const rec of (log2 ?? "").split("")) {
+      const [sha, ref, ts, subject] = rec.trim().split("");
+      if (!sha || !ts || known.has(sha)) continue;
+      out.push({ repo: (0, import_node_path13.basename)(repo), branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
+      if (++n >= limitPerRepo) break;
+    }
+  }
+  return out;
+}
+function collect(from, to, workRepos2) {
+  const captures = loadCaptures(from.getTime());
+  const known = new Set(captures.flatMap((c) => c.commits.map((k) => k.sha)));
+  return { from: from.toISOString(), to: to.toISOString(), captures, outside: outsideCommits(workRepos2, from, known) };
+}
+function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
+  const head = [
+    `# \u041C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B \u0434\u043B\u044F \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430`,
+    `\u041F\u0435\u0440\u0438\u043E\u0434: ${m.from} \u2014 ${m.to} (\u0441 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u043D\u043E\u0433\u043E \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430)`,
+    "",
+    `## \u041A\u0430\u043A \u043F\u0438\u0441\u0430\u0442\u044C \u0441\u0442\u0435\u043D\u0434\u0430\u043F (prompt_version: ${prompt.version})`,
+    prompt.text.trim(),
+    ""
+  ];
+  const body = [];
+  const perSession = Math.max(2e3, Math.floor(maxChars / Math.max(1, m.captures.length)));
+  const byRepo = /* @__PURE__ */ new Map();
+  for (const c of m.captures) {
+    const list2 = byRepo.get(c.repo.name) ?? [];
+    list2.push(c);
+    byRepo.set(c.repo.name, list2);
+  }
+  for (const [repo, caps] of byRepo) {
+    body.push(`## \u0420\u0435\u043F\u043E ${repo}`);
+    const byBranch = /* @__PURE__ */ new Map();
+    for (const c of caps) byBranch.set(c.branch, [...byBranch.get(c.branch) ?? [], c]);
+    for (const [branch, list2] of byBranch) {
+      const tickets = [...new Set(list2.flatMap((c) => c.tickets))];
+      body.push(`### \u0412\u0435\u0442\u043A\u0430 ${branch}${tickets.length ? ` \xB7 \u0442\u0438\u043A\u0435\u0442\u044B: ${tickets.join(", ")}` : ""}`);
+      const commits = list2.flatMap((c) => c.commits);
+      if (commits.length) {
+        body.push("\u041A\u043E\u043C\u043C\u0438\u0442\u044B:");
+        for (const k of commits) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message.split("\n")[0]}`);
+      }
+      const files2 = [...new Set(list2.flatMap((c) => c.files))];
+      if (files2.length) body.push(`\u0424\u0430\u0439\u043B\u044B: ${files2.slice(0, 30).join(", ")}${files2.length > 30 ? ` \u0438 \u0435\u0449\u0451 ${files2.length - 30}` : ""}`);
+      for (const c of list2) {
+        body.push(`\u0421\u0435\u0441\u0441\u0438\u044F ${c.period.from.slice(0, 16)} \u2014 ${c.period.to.slice(11, 16)}:`);
+        body.push(...sessionLines(c, perSession));
+      }
+      body.push("");
+    }
+  }
+  if (m.outside.length) {
+    body.push("## \u041A\u043E\u043C\u043C\u0438\u0442\u044B \u0432\u043D\u0435 \u0441\u0435\u0441\u0441\u0438\u0439 Claude Code");
+    for (const k of m.outside) body.push(`- ${k.repo} / ${k.branch} ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message}`);
+  }
+  if (body.length === 0) body.push("\u0420\u0430\u0431\u043E\u0442\u044B \u0441 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E.");
+  return split([...head, ...body]);
+}
+function sessionLines(c, budget) {
+  const line = (m) => `${m.role === "user" ? "> \u0420\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u0447\u0438\u043A" : "< Claude"}: ${m.text.replace(/\n{3,}/g, "\n\n")}`;
+  const lines = c.messages.map(line);
+  const total = lines.reduce((n, l) => n + l.length, 0);
+  if (total <= budget) return lines;
+  const first = c.messages.findIndex((m) => m.role === "user");
+  const keep = new Set(first >= 0 ? [first] : []);
+  let used = first >= 0 ? lines[first].length : 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (keep.has(i)) continue;
+    if (used + lines[i].length > budget) break;
+    keep.add(i);
+    used += lines[i].length;
+  }
+  const out = [];
+  lines.forEach((l, i) => {
+    if (keep.has(i)) out.push(l);
+    else if (out[out.length - 1] !== "\u2026 (\u0447\u0430\u0441\u0442\u044C \u043F\u0435\u0440\u0435\u043F\u0438\u0441\u043A\u0438 \u043E\u043F\u0443\u0449\u0435\u043D\u0430)") out.push("\u2026 (\u0447\u0430\u0441\u0442\u044C \u043F\u0435\u0440\u0435\u043F\u0438\u0441\u043A\u0438 \u043E\u043F\u0443\u0449\u0435\u043D\u0430)");
+  });
+  return out;
+}
+function split(lines) {
+  const parts = [];
+  let cur = "";
+  for (let l of lines) {
+    if (l.length > PART_CHARS) l = l.slice(0, PART_CHARS - 20) + " \u2026[\u043E\u0431\u0440\u0435\u0437\u0430\u043D\u043E]";
+    if (cur.length + l.length + 1 > PART_CHARS) {
+      parts.push(cur);
+      cur = "";
+    }
+    cur += l + "\n";
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
+function git2(cwd, args) {
+  try {
+    return (0, import_node_child_process3.execFileSync)("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: CAPTURE.gitTimeoutMs,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" }
+    });
+  } catch {
+    return null;
+  }
+}
+var dirs = (d) => {
+  try {
+    return (0, import_node_fs11.readdirSync)(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
+  }
+};
+var files = (d) => {
+  try {
+    return (0, import_node_fs11.readdirSync)(d);
+  } catch {
+    return [];
+  }
+};
+
+// src/standup/schedule.ts
+function localDate(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function periodFrom(state, now) {
+  const last = state.last_checkin ? new Date(state.last_checkin) : null;
+  return last && !Number.isNaN(last.getTime()) ? last : new Date(now.getTime() - DEFAULTS.joinBackfillDays * 864e5);
+}
+function gate(state, now) {
+  const s = state.standup ?? {};
+  if (now.getHours() < DEFAULTS.showNotBeforeHour) return "early";
+  if (s.done_date === localDate(now)) return "done_today";
+  if (s.showing_until && Date.parse(s.showing_until) > now.getTime()) return "showing";
+  if (s.snooze_until && Date.parse(s.snooze_until) > now.getTime()) return "snoozed";
+  return "ok";
+}
+
+// src/standup/commands.ts
+var H = 36e5;
+var partsFile = () => (0, import_node_path14.join)(dataDir(), "standup-materials.json");
+async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date()) {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case "prepare":
+      return prepare(rest, pluginRoot, now);
+    case "send":
+      return send(rest.join(" "), now);
+    case "snooze":
+      return snooze(now);
+    case "event": {
+      const type = rest[0];
+      if (!["edited", "blocker"].includes(type)) return { code: 1, out: "usage: standup event edited|blocker" };
+      enqueueEvent(type, now);
+      return { code: 0, out: "ok" };
+    }
+    default:
+      return { code: 1, out: "usage: standup prepare [--part N] | send '<json>' | snooze | event edited|blocker" };
+  }
+}
+async function prepare(args, pluginRoot, now) {
+  const partArg = args.indexOf("--part");
+  const part = partArg >= 0 ? Number(args[partArg + 1]) : 1;
+  if (!Number.isInteger(part) || part < 1) return { code: 1, out: "usage: standup prepare [--part N]" };
+  let parts;
+  if (part === 1) {
+    const state = readState();
+    const from = periodFrom(state, now);
+    const prompt = await standupPrompt(pluginRoot, now.getTime());
+    parts = render(collect(from, now, workRepos(state)), prompt);
+    writeFileAtomic(partsFile(), JSON.stringify(parts));
+    updateState((s) => {
+      s.standup = {
+        ...s.standup,
+        pending: { from: from.toISOString(), to: now.toISOString(), prompt_version: prompt.version },
+        showing_until: new Date(now.getTime() + DEFAULTS.showLockMinutes * 6e4).toISOString(),
+        // No answer (the user went straight to an emergency) = ask again later, like «Не сейчас».
+        snooze_until: new Date(now.getTime() + DEFAULTS.snoozeHours * H).toISOString()
+      };
+    });
+    enqueueEvent("shown", now);
+  } else {
+    try {
+      parts = JSON.parse((0, import_node_fs12.readFileSync)(partsFile(), "utf8"));
+    } catch {
+      return { code: 1, out: "\u041D\u0435\u0442 \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043B\u0435\u043D\u043D\u044B\u0445 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u043E\u0432: \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438 standup prepare \u0431\u0435\u0437 --part." };
+    }
+  }
+  if (part > parts.length) return { code: 1, out: `\u0427\u0430\u0441\u0442\u0435\u0439 \u0432\u0441\u0435\u0433\u043E ${parts.length}.` };
+  const header = parts.length > 1 ? `[\u0427\u0430\u0441\u0442\u044C ${part} \u0438\u0437 ${parts.length}${part < parts.length ? ` \u2014 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0430\u044F: standup prepare --part ${part + 1}` : ""}]
+` : "";
+  return { code: 0, out: header + parts[part - 1] };
+}
+var str2 = (v) => typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+function buildReport(input, pending, now) {
+  const text = str2(input.text);
+  if (!text) return "\u043D\u0443\u0436\u0435\u043D text \u2014 \u0441\u0442\u0435\u043D\u0434\u0430\u043F \u0440\u043E\u0432\u043D\u043E \u0432 \u0442\u043E\u043C \u0432\u0438\u0434\u0435, \u0432 \u043A\u0430\u043A\u043E\u043C \u0435\u0433\u043E \u0443\u0432\u0438\u0434\u0435\u043B \u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u0447\u0438\u043A";
+  if (!Array.isArray(input.items)) return "\u043D\u0443\u0436\u0435\u043D items: [{ticket, branch, done, why, next}]";
+  const items = [];
+  for (const raw of input.items) {
+    const i = raw ?? {};
+    const done = str2(i.done);
+    if (!done) return "\u0443 \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u044D\u043B\u0435\u043C\u0435\u043D\u0442\u0430 items \u043D\u0443\u0436\u043D\u043E \u043F\u043E\u043B\u0435 done";
+    items.push({ ticket: str2(i.ticket), branch: str2(i.branch), done, why: str2(i.why), next: str2(i.next) });
+  }
+  const blockers = Array.isArray(input.blockers) ? input.blockers.map(str2).filter((b) => b !== null) : [];
+  return { id: (0, import_node_crypto3.randomUUID)(), date: localDate(now), period: { from: pending.from, to: pending.to }, items, blockers, text, prompt_version: pending.prompt_version };
+}
+async function send(json, now) {
+  let input;
+  try {
+    input = JSON.parse(json);
+  } catch {
+    return { code: 1, out: "\u0410\u0440\u0433\u0443\u043C\u0435\u043D\u0442 \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C JSON {text, items, blockers} \u0432 \u043E\u0434\u0438\u043D\u0430\u0440\u043D\u044B\u0445 \u043A\u0430\u0432\u044B\u0447\u043A\u0430\u0445 (\u0430\u043F\u043E\u0441\u0442\u0440\u043E\u0444 \u0432\u043D\u0443\u0442\u0440\u0438 \u0437\u0430\u043C\u0435\u043D\u0438 \u043D\u0430 \u2019)." };
+  }
+  const state = readState();
+  const pending = state.standup?.pending ?? { from: periodFrom(state, now).toISOString(), to: now.toISOString(), prompt_version: "unknown" };
+  const report = buildReport(input, pending, now);
+  if (typeof report === "string") return { code: 1, out: report };
+  enqueueReport(report);
+  enqueueEvent("sent", now);
+  updateState((s) => {
+    s.last_checkin = report.period.to;
+    s.standup = { done_date: localDate(now) };
+  });
+  const r = await flush(now.getTime());
+  log("info", "standup: sent", { items: report.items.length, blockers: report.blockers.length, delivered: r.left === 0, stopped: r.stopped });
+  if (r.left === 0) return { code: 0, out: "\u041E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u043E \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0443." };
+  if (r.stopped === "no_token") return { code: 0, out: "\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E. \u0423\u0439\u0434\u0451\u0442 \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0443, \u043A\u0430\u043A \u0442\u043E\u043B\u044C\u043A\u043E \u0442\u044B \u0432\u0441\u0442\u0443\u043F\u0438\u0448\u044C \u0432 \u043A\u043E\u043C\u0430\u043D\u0434\u0443." };
+  return { code: 0, out: "\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E, \u043D\u043E \u0441\u0435\u0440\u0432\u0435\u0440 \u0441\u0435\u0439\u0447\u0430\u0441 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u2014 \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u0441\u044F \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u043F\u0440\u0438 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0435 Claude Code." };
+}
+function snooze(now) {
+  const today = localDate(now);
+  let skipped = false;
+  updateState((s) => {
+    const st = s.standup ?? {};
+    const snoozes = (st.snooze_date === today ? st.snoozes ?? 0 : 0) + 1;
+    skipped = snoozes >= 2;
+    s.standup = skipped ? { done_date: today } : { ...st, snooze_date: today, snoozes, snooze_until: new Date(now.getTime() + DEFAULTS.snoozeHours * H).toISOString(), showing_until: void 0, pending: void 0 };
+  });
+  enqueueEvent(skipped ? "skipped" : "snoozed", now);
+  return skipped ? { code: 0, out: "\u041F\u0440\u043E\u043F\u0443\u0441\u043A\u0430\u0435\u043C \u0441\u0435\u0433\u043E\u0434\u043D\u044F. \u0420\u0430\u0431\u043E\u0442\u0430 \u0437\u0430 \u0441\u0435\u0433\u043E\u0434\u043D\u044F \u0432\u043E\u0439\u0434\u0451\u0442 \u0432 \u0437\u0430\u0432\u0442\u0440\u0430\u0448\u043D\u0438\u0439 \u0441\u0442\u0435\u043D\u0434\u0430\u043F." } : { code: 0, out: `\u0425\u043E\u0440\u043E\u0448\u043E, \u043D\u0430\u043F\u043E\u043C\u043D\u044E \u043D\u0435 \u0440\u0430\u043D\u044C\u0448\u0435 \u0447\u0435\u043C \u0447\u0435\u0440\u0435\u0437 ${DEFAULTS.snoozeHours} \u0447.` };
+}
+
 // src/hookio.ts
 async function readStdin() {
   const chunks = [];
@@ -1020,7 +1445,7 @@ function parseHookInput(raw) {
 }
 
 // src/hooks/session-end.ts
-var import_node_child_process3 = require("node:child_process");
+var import_node_child_process4 = require("node:child_process");
 function sessionEnd(input, cliPath) {
   const job = JSON.stringify({
     session_id: input.session_id,
@@ -1028,15 +1453,17 @@ function sessionEnd(input, cliPath) {
     cwd: input.cwd,
     reason: input.reason
   });
-  (0, import_node_child_process3.spawn)(process.execPath, [cliPath, "capture", job], { detached: true, stdio: "ignore" }).unref();
+  (0, import_node_child_process4.spawn)(process.execPath, [cliPath, "capture", job], { detached: true, stdio: "ignore" }).unref();
 }
 
 // src/hooks/session-start.ts
-var import_node_path11 = require("node:path");
-function sessionStart(input, cliPath) {
-  let out = null;
+var import_node_path15 = require("node:path");
+var import_node_child_process5 = require("node:child_process");
+var import_node_fs13 = require("node:fs");
+function sessionStart(input, cliPath, now = /* @__PURE__ */ new Date()) {
+  const outs = [];
   try {
-    out = newRepoCheck(input, cliPath);
+    outs.push(newRepoCheck(input, cliPath));
   } catch (err) {
     log("error", "session-start: repo check failed", { error: err instanceof Error ? err.message : String(err) });
   }
@@ -1049,6 +1476,55 @@ function sessionStart(input, cliPath) {
   } catch (err) {
     log("error", "session-start: recovery failed", { error: err instanceof Error ? err.message : String(err) });
   }
+  try {
+    outs.push(standupCheck(input, now));
+    if (queueNotEmpty()) (0, import_node_child_process5.spawn)(process.execPath, [cliPath, "flush"], { detached: true, stdio: "ignore" }).unref();
+  } catch (err) {
+    log("error", "session-start: standup check failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+  return merge(outs);
+}
+function standupCheck(input, now, state = readState()) {
+  if (input.source === "compact") return null;
+  const repos = workRepos(state);
+  if (repos.length === 0 || gate(state, now) !== "ok") return null;
+  const from = periodFrom(state, now);
+  const hasWork = rawFilesSince(from.getTime()).length > 0 || outsideCommits(repos, from, /* @__PURE__ */ new Set(), 1).length > 0;
+  if (!hasWork) {
+    const today = localDate(now);
+    if (state.standup?.no_work_date !== today) {
+      enqueueEvent("no_work", now);
+      updateState((s) => {
+        s.standup = { ...s.standup, no_work_date: today };
+      });
+    }
+    return null;
+  }
+  log("info", "standup: ready");
+  return {
+    systemMessage: "\u{1F4CB} \u0421\u0442\u0435\u043D\u0434\u0430\u043F \u0433\u043E\u0442\u043E\u0432",
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: `[Standup Agent] \u041F\u0435\u0440\u0432\u0430\u044F \u0441\u0435\u0441\u0441\u0438\u044F \u0434\u043D\u044F: \u0441 \u043F\u0440\u043E\u0448\u043B\u043E\u0433\u043E \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u0435\u0441\u0442\u044C \u0440\u0430\u0431\u043E\u0442\u0430, \u0447\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u043C\u043E\u0436\u043D\u043E \u0441\u043E\u0431\u0440\u0430\u0442\u044C.
+\u041F\u0440\u0435\u0436\u0434\u0435 \u0447\u0435\u043C \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0442\u044C \u043F\u0440\u043E\u0441\u044C\u0431\u0443 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F, \u0432\u044B\u0437\u043E\u0432\u0438 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442 Skill: skill \xABstandup-agent:standup\xBB, args \xABshow\xBB \u2014 \u0438 \u043F\u0440\u043E\u0439\u0434\u0438 \u0435\u0433\u043E \u0441\u0446\u0435\u043D\u0430\u0440\u0438\u0439 \u0434\u043E \u043A\u043E\u043D\u0446\u0430 (\u043F\u043E\u043A\u0430\u0437 \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u0438 \u0432\u043E\u043F\u0440\u043E\u0441 \u0441 4 \u043A\u043D\u043E\u043F\u043A\u0430\u043C\u0438). \u0422\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u0441\u043B\u0435 \u043E\u0442\u0432\u0435\u0442\u0430 \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438 \u043A \u043F\u0440\u043E\u0441\u044C\u0431\u0435 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F.
+\u0418\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435: \u0435\u0441\u043B\u0438 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043F\u0438\u0448\u0435\u0442 \u043E \u0441\u0440\u043E\u0447\u043D\u043E\u0439 \u0430\u0432\u0430\u0440\u0438\u0438 \u2014 \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u043E\u043C\u043E\u0433\u0438, \u0441\u0442\u0435\u043D\u0434\u0430\u043F \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0438 \u043F\u043E\u0442\u043E\u043C.`
+    }
+  };
+}
+function queueNotEmpty() {
+  try {
+    return (0, import_node_fs13.readdirSync)(paths.queue()).some((f) => f.endsWith(".json") && !f.startsWith("."));
+  } catch {
+    return false;
+  }
+}
+function merge(outs) {
+  const msgs = outs.map((o) => o?.systemMessage).filter((m) => !!m);
+  const ctx = outs.map((o) => o?.hookSpecificOutput?.additionalContext).filter((c) => !!c);
+  if (msgs.length === 0 && ctx.length === 0) return null;
+  const out = {};
+  if (msgs.length) out.systemMessage = msgs.join("\n");
+  if (ctx.length) out.hookSpecificOutput = { hookEventName: "SessionStart", additionalContext: ctx.join("\n\n") };
   return out;
 }
 function findMissedSessions(input, now = Date.now()) {
@@ -1064,7 +1540,7 @@ function findMissedSessions(input, now = Date.now()) {
   });
 }
 function projectsDirFor(input) {
-  return input.transcript_path ? (0, import_node_path11.dirname)((0, import_node_path11.dirname)(input.transcript_path)) : paths.claudeProjects();
+  return input.transcript_path ? (0, import_node_path15.dirname)((0, import_node_path15.dirname)(input.transcript_path)) : paths.claudeProjects();
 }
 function newRepoCheck(input, cliPath, state = readState()) {
   if (!state.team || !input.cwd) return null;
@@ -1078,23 +1554,20 @@ function newRepoCheck(input, cliPath, state = readState()) {
   markRepoAsked(repo.path);
   log("info", "repos: asking about a new repo", { repo: repo.name });
   return {
-    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: askAboutRepo(repo, cliPath, state.team.name) }
+    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: askAboutRepo(repo, state.team.name) }
   };
 }
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-function cliCommand(cliPath, args) {
-  return `CLAUDE_PLUGIN_DATA=${sq(dataDir())} node ${sq(cliPath)} ${args}`;
-}
-function askAboutRepo(repo, cliPath, teamName) {
+function askAboutRepo(repo, teamName) {
   const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : " (\u0431\u0435\u0437 remote)";
-  const set2 = (kind) => cliCommand(cliPath, `repos set ${sq(`${repo.path}=${kind}`)}`);
+  const set2 = (kind) => `\u0432\u044B\u0437\u043E\u0432\u0438 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442 Skill: skill \xABstandup-agent:standup\xBB, args \xABrepos set ${sq(`${repo.path}=${kind}`)}\xBB`;
   return `[Standup Agent] \u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u0432\u043F\u0435\u0440\u0432\u044B\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u0440\u0435\u043F\u043E ${repo.name}${where} \u0441 \u0442\u0435\u0445 \u043F\u043E\u0440, \u043A\u0430\u043A \u0432\u0441\u0442\u0443\u043F\u0438\u043B \u0432 \u043A\u043E\u043C\u0430\u043D\u0434\u0443${teamName ? ` \xAB${teamName}\xBB` : ""}. \u042D\u0442\u043E\u0442 \u0432\u043E\u043F\u0440\u043E\u0441 \u0437\u0430\u0434\u0430\u0451\u0442\u0441\u044F \u043E\u0434\u0438\u043D \u0440\u0430\u0437.
 
 \u041F\u0440\u0435\u0436\u0434\u0435 \u0447\u0435\u043C \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0442\u044C \u043F\u0435\u0440\u0432\u0443\u044E \u043F\u0440\u043E\u0441\u044C\u0431\u0443 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F, \u0432\u044B\u0437\u043E\u0432\u0438 AskUserQuestion: \u0432\u043E\u043F\u0440\u043E\u0441 \xAB\u0412\u043A\u043B\u044E\u0447\u0430\u0442\u044C \u0440\u0435\u043F\u043E ${repo.name} \u0432 \u0441\u0442\u0435\u043D\u0434\u0430\u043F?\xBB, header \xAB\u0421\u0442\u0435\u043D\u0434\u0430\u043F\xBB, \u0434\u0432\u0435 \u043E\u043F\u0446\u0438\u0438:
 - \xAB\u0414\u0430, \u0440\u0430\u0431\u043E\u0447\u0438\u0439\xBB \u2014 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435: \u0440\u0430\u0431\u043E\u0442\u0430 \u0432 \u044D\u0442\u043E\u043C \u0440\u0435\u043F\u043E \u043F\u043E\u043F\u0430\u0434\u0451\u0442 \u0432 \u0447\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 (\u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u0432\u0438\u0434\u0438\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0442\u043E, \u0447\u0442\u043E \u0442\u044B \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0448\u044C);
 - \xAB\u041D\u0435\u0442, \u043B\u0438\u0447\u043D\u044B\u0439\xBB \u2014 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435: \u043D\u0438\u0447\u0435\u0433\u043E \u0438\u0437 \u044D\u0442\u043E\u0433\u043E \u0440\u0435\u043F\u043E \u043D\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442\u0441\u044F \u0434\u0430\u0436\u0435 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E.
 
-\u041F\u043E \u043E\u0442\u0432\u0435\u0442\u0443 \u0432\u044B\u043F\u043E\u043B\u043D\u0438 \u043E\u0434\u043D\u0443 \u043A\u043E\u043C\u0430\u043D\u0434\u0443 \u0447\u0435\u0440\u0435\u0437 Bash \u0438 \u0431\u043E\u043B\u044C\u0448\u0435 \u043A \u044D\u0442\u043E\u043C\u0443 \u043D\u0435 \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0439\u0441\u044F:
+\u041F\u043E \u043E\u0442\u0432\u0435\u0442\u0443 \u0441\u0434\u0435\u043B\u0430\u0439 \u043E\u0434\u043D\u043E \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u0438 \u0431\u043E\u043B\u044C\u0448\u0435 \u043A \u044D\u0442\u043E\u043C\u0443 \u043D\u0435 \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0439\u0441\u044F:
 - \xAB\u0414\u0430, \u0440\u0430\u0431\u043E\u0447\u0438\u0439\xBB: ${set2("work")}
 - \xAB\u041D\u0435\u0442, \u043B\u0438\u0447\u043D\u044B\u0439\xBB: ${set2("personal")}
 \u0415\u0441\u043B\u0438 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0435 \u043E\u0442\u0432\u0435\u0442\u0438\u043B \u0438\u043B\u0438 \u043E\u0442\u043A\u0430\u0437\u0430\u043B\u0441\u044F \u0432\u044B\u0431\u0438\u0440\u0430\u0442\u044C \u2014 \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0439 (\u0440\u0435\u043F\u043E \u043E\u0441\u0442\u0430\u043D\u0435\u0442\u0441\u044F \u043D\u0435\u0440\u0430\u0437\u043C\u0435\u0447\u0435\u043D\u043D\u044B\u043C \u0438 \u043D\u0435 \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u0445\u0432\u0430\u0442\u044B\u0432\u0430\u0442\u044C\u0441\u044F; \u043F\u043E\u043C\u0435\u043D\u044F\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0447\u0435\u0440\u0435\u0437 /standup repos). \u041F\u043E\u0441\u043B\u0435 \u044D\u0442\u043E\u0433\u043E \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438 \u043A \u0435\u0433\u043E \u043F\u0440\u043E\u0441\u044C\u0431\u0435.`;
@@ -1102,6 +1575,10 @@ function askAboutRepo(repo, cliPath, teamName) {
 
 // src/cli.ts
 async function main(argv) {
+  if (argv[0] === "--data" && argv[1]) {
+    process.env.CLAUDE_PLUGIN_DATA = argv[1];
+    argv = argv.slice(2);
+  }
   const [command, arg] = argv;
   const cliPath = process.argv[1] ?? __filename;
   try {
@@ -1122,6 +1599,16 @@ async function main(argv) {
         process.stdout.write(JSON.stringify(out, null, 2) + "\n");
         return code;
       }
+      case "standup": {
+        const { code, out } = await standupCommand(argv.slice(1), (0, import_node_path16.dirname)((0, import_node_path16.dirname)(cliPath)));
+        process.stdout.write(out + "\n");
+        return code;
+      }
+      case "flush": {
+        const r = await flush();
+        if (r.sent > 0 || r.stopped === "auth") log("info", "queue: flush", { ...r });
+        return 0;
+      }
       default:
         log("error", "unknown command", { command });
         return 0;
@@ -1129,7 +1616,7 @@ async function main(argv) {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     log("error", "command failed", { command, error });
-    if (command === "repos") {
+    if (command === "repos" || command === "standup") {
       process.stdout.write(JSON.stringify({ error }) + "\n");
       return 1;
     }

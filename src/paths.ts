@@ -16,6 +16,7 @@ export const paths = {
   auth: () => join(dataDir(), 'auth.json'),
   digests: () => join(dataDir(), 'digests'),
   queue: () => join(dataDir(), 'queue'),
+  promptCache: () => join(dataDir(), 'prompt-cache.json'),
   logDir: () => join(dataDir(), 'log'),
   claudeProjects: () => join(claudeDir(), 'projects'),
 };

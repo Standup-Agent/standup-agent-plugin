@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { projectDirName } from '../src/capture/discover.js';
 import { reposCommand } from '../src/commands/repos.js';
-import { cliCommand, newRepoCheck } from '../src/hooks/session-start.js';
+import { newRepoCheck, sq } from '../src/hooks/session-start.js';
 import { classify, matchesWorkOrg, normalizeOrg, normalizeRemote, repoOf, scanRepos } from '../src/repos.js';
 import { readState } from '../src/state.js';
 import { git, makeRepo, tmp, tx, writeTranscript } from './helpers.js';
@@ -198,15 +198,15 @@ describe('newRepoCheck (SessionStart)', () => {
     expect(readState().repos).toEqual({ [r]: 'work' });
   });
 
-  it('asks about an unknown repo exactly once, with commands that carry the data dir', () => {
+  it('asks about an unknown repo exactly once, answering through the skill', () => {
     const r = repo('https://github.com/me/blog');
     state({ team: { name: 'Backend', work_orgs: ['github.com/acme'] } });
     const out = newRepoCheck(input(join(r)), '/p/cli.js');
     const ctx = out?.hookSpecificOutput?.additionalContext ?? '';
     expect(ctx).toContain('AskUserQuestion');
     expect(ctx).toContain('«Backend»');
-    expect(ctx).toContain(cliCommand('/p/cli.js', `repos set '${r}=work'`));
-    expect(ctx).toContain(`CLAUDE_PLUGIN_DATA='${data}'`);
+    expect(ctx).toContain(`skill «standup-agent:standup», args «repos set '${r}=work'»`);
+    expect(ctx).toContain(`args «repos set '${r}=personal'»`);
     expect(readState().repos_asked?.[r]).toBeDefined();
     expect(newRepoCheck(input(r), '/p/cli.js')).toBeNull();
   });
@@ -219,7 +219,7 @@ describe('newRepoCheck (SessionStart)', () => {
   });
 
   it('quotes paths with spaces and quotes for the shell', () => {
-    expect(cliCommand("/a b/it's/cli.js", 'repos list')).toContain(`'/a b/it'\\''s/cli.js' repos list`);
+    expect(sq("/a b/it's")).toBe(`'/a b/it'\\''s'`);
   });
 });
 

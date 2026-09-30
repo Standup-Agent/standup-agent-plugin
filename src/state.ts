@@ -18,11 +18,31 @@ export interface State {
   team?: { name?: string; work_orgs?: string[] };
   /** Repos we already asked about on SessionStart: path → ISO time. Asked at most once. */
   repos_asked?: Record<string, string>;
+  /** End of the period covered by the last sent standup (ISO). The next standup starts here. */
+  last_checkin?: string;
+  /** Daily standup display state (task 2). Dates are the developer's local YYYY-MM-DD. */
+  standup?: StandupState;
   /** When the last capture finished (ISO). */
   last_capture_at?: string;
   /** session_id → transcript mtime (ms) at its last capture. SessionStart recovery compares against it. */
   captures?: Record<string, number>;
   [key: string]: unknown;
+}
+
+export interface StandupState {
+  /** Sent or skipped today: no more standups until tomorrow. */
+  done_date?: string;
+  /** Not before this time (ISO): after «Не сейчас», or after a show left without an answer. */
+  snooze_until?: string;
+  /** «Не сейчас» count for `snooze_date`; the second one skips the day. */
+  snooze_date?: string;
+  snoozes?: number;
+  /** Another terminal is showing the standup until this time (ISO). */
+  showing_until?: string;
+  /** The `no_work` event was already sent for this date. */
+  no_work_date?: string;
+  /** Period and prompt of the standup being shown, so `send` doesn't depend on Claude echoing them. */
+  pending?: { from: string; to: string; prompt_version: string };
 }
 
 export function readState(): State {

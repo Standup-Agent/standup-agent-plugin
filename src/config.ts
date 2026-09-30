@@ -10,6 +10,8 @@ export const DEFAULTS = {
   snoozeHours: 2,
   /** Another terminal won't show the standup while one is showing it. */
   showLockMinutes: 10,
+  /** Materials handed to the synthesis subagent are cut to this many characters (keeps its context small). */
+  synthMaxChars: 100_000,
   /** Repo scan window when joining a team. */
   repoScanDays: 30,
   /** Transcripts re-captured right after join, to show a first standup immediately. */
@@ -38,4 +40,14 @@ export const CAPTURE = {
   stateLockStaleMs: 10_000,
 } as const;
 
-export const API_BASE_URL = process.env.STANDUP_AGENT_API_URL ?? 'https://standupagent.ai/api';
+/** Network: one attempt per send, then the local queue retries on the next session start. */
+export const NET = {
+  timeoutMs: 5000,
+  /** Queued items older than this are dropped (a week of offline is not worth replaying). */
+  queueMaxAgeDays: 14,
+  /** The server prompt is cached this long. */
+  promptCacheHours: 24,
+} as const;
+
+/** Server base URL; read on every call so tests and staging can point elsewhere. */
+export const apiBaseUrl = () => process.env.STANDUP_AGENT_API_URL ?? 'https://standupagent.ai/api';
