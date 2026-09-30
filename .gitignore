@@ -1,0 +1,6 @@
+node_modules/
+coverage/
+*.log
+.env*
+.DS_Store
+# plugin/dist/ is committed on purpose — marketplace installs from git without a build step

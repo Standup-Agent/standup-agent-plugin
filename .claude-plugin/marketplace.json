@@ -1,0 +1,11 @@
+{
+  "name": "standup-agent",
+  "owner": { "name": "Standup Agent" },
+  "plugins": [
+    {
+      "name": "standup-agent",
+      "source": "./plugin",
+      "description": "Собирает командный стендап из работы в Claude Code"
+    }
+  ]
+}
