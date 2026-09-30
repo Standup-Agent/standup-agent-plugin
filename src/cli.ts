@@ -13,7 +13,7 @@ export async function main(argv: string[]): Promise<number> {
   try {
     switch (command) {
       case 'session-start': {
-        const out = sessionStart(parseHookInput(await readStdin()));
+        const out = sessionStart(parseHookInput(await readStdin()), process.argv[1] ?? __filename);
         if (out) process.stdout.write(JSON.stringify(out));
         return 0;
       }
@@ -21,7 +21,7 @@ export async function main(argv: string[]): Promise<number> {
         sessionEnd(parseHookInput(await readStdin()), process.argv[1] ?? __filename);
         return 0;
       case 'capture':
-        await runCapture(JSON.parse(arg ?? '{}') as CaptureJob);
+        await runCapture(JSON.parse(arg ?? '{}') as CaptureJob | CaptureJob[]);
         return 0;
       default:
         log('error', 'unknown command', { command });

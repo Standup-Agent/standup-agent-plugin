@@ -16,4 +16,24 @@ export const DEFAULTS = {
   joinBackfillDays: 3,
 } as const;
 
+// Capture limits chosen in task 1. They are not on the board, so they live apart from DEFAULTS
+// until the board confirms them.
+export const CAPTURE = {
+  /** One message longer than this is cut; keeps a pasted log from eating the session budget. */
+  maxBytesPerMessage: 8 * 1024,
+  /** SessionStart recovery only looks at transcripts modified within this window. */
+  recoverLookbackDays: 7,
+  /** At most this many missed sessions are handed to one recovery worker. */
+  recoverMaxSessions: 50,
+  /** Commits after the last transcript entry still count to the session (commit right before /exit). */
+  commitSlackMinutes: 5,
+  maxCommitsPerBranch: 100,
+  maxFilesPerBranch: 200,
+  maxCommitMessageBytes: 1024,
+  gitTimeoutMs: 5000,
+  /** state.json lock: wait this long, and treat an older lock file as stale. */
+  stateLockWaitMs: 2000,
+  stateLockStaleMs: 10_000,
+} as const;
+
 export const API_BASE_URL = process.env.STANDUP_AGENT_API_URL ?? 'https://standupagent.ai/api';

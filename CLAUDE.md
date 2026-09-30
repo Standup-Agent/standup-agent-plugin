@@ -33,17 +33,19 @@ src/
   repos.ts               # (задача 3) скан ~/.claude/projects, рабочий/личный
   store.ts / state.ts    # склад дайджестов с TTL; state.json и блокировки
   api.ts                 # клиент сервера, офлайн-очередь
-  config.ts              # все [ДЕФОЛТ]-значения
-  paths.ts, log.ts
+  config.ts              # все [ДЕФОЛТ]-значения (DEFAULTS) и лимиты захвата, которых нет на доске (CAPTURE)
+  paths.ts, log.ts, fsutil.ts (атомарная запись)
 test/
 ```
 
 ## Локальные данные (`$CLAUDE_PLUGIN_DATA`)
 
 ```
-state.json                         # last_checkin, shown_at/lock, snooze_until, repos{path→work|personal}, member
+state.json                         # last_checkin, shown_at/lock, snooze_until, repos{path→work|personal}, member,
+                                   # last_capture_at, captures{session_id→mtime транскрипта при захвате}
 auth.json                          # member_token (не логировать)
-digests/<repo>/<branch>/raw/*.json # сырьё сессий, TTL 30 дней
+digests/<repo>/<branch>/raw/*.json # сырьё сессий, TTL 30 дней от последней активности (mtime файла)
+                                   # <repo> = имя-<8 hex sha256 пути>, <branch> = encodeURIComponent(ветка)
 digests/<repo>/<branch>/digest.md  # синтезированный дайджест ветки, дополняется
 queue/*.json                       # неотправленные репорты (ретрай, идемпотентность по report.id)
 prompt-cache.json                  # {version, text, fetched_at}, кэш на день
@@ -58,7 +60,8 @@ prompt-cache.json                  # {version, text, fetched_at}, кэш на д
 - Формат транскриптов не документирован, поэтому парсер живёт только в `capture/transcript.ts`, падает мягко и логирует нераспознанное.
 - Из транскрипта берём только тексты пользователя и Claude, без вывода инструментов и диффов. Лимит — десятки КБ на сессию.
 - Из `~/.claude.json` читаем только `oauthAccount.displayName` и `emailAddress`. Файл содержит токены: не логировать, не копировать. Если полей нет, берём `git config user.name/email`.
-- Неразмеченный репо не захватывается. Директории без git пропускаем.
+- Неразмеченный репо не захватывается. Директории без git пропускаем. Ключ разметки в `state.repos` — вывод `git rev-parse --show-toplevel`; worktree засчитывается по основному checkout.
+- Страховка на SessionStart только читает каталоги и `stat`, содержимое транскриптов не открывает; найденное отдаёт отсоединённому воркеру `capture '<json-массив jobs>'`.
 
 ## Контракт с сервером
 
