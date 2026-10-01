@@ -50,4 +50,4 @@ export const NET = {
 } as const;
 
 /** Default server; the invite link's host replaces it at join (see api.ts apiBaseUrl). */
-export const DEFAULT_API_BASE = 'https://standupagent.ai/api';
+export const DEFAULT_API_BASE = 'https://standupagent.co/api';

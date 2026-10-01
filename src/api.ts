@@ -37,7 +37,7 @@ type QueueItem = { kind: 'report'; body: Report } | { kind: 'event'; body: { typ
 export interface Auth {
   member_token: string;
   member_id: string;
-  /** Server the invite came from, e.g. https://standupagent.ai/api. */
+  /** Server the invite came from, e.g. https://standupagent.co/api. */
   api_base: string;
 }
 

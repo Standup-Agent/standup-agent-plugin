@@ -4,5 +4,5 @@
   "version": "0.0.1",
   "description": "Собирает командный стендап из работы в Claude Code",
   "author": { "name": "Standup Agent" },
-  "homepage": "https://standupagent.ai"
+  "homepage": "https://standupagent.co"
 }

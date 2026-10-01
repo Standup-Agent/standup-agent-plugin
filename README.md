@@ -6,17 +6,17 @@
 
 ## Установка
 
-Строку установки и ссылку на команду даёт менеджер на странице инвайта `standupagent.ai/join/<CODE>`.
+Строку установки и ссылку на команду даёт менеджер на странице инвайта `standupagent.co/join/<CODE>`.
 
 ```
-/plugin marketplace add <org>/standup-agent-plugin
+/plugin marketplace add Standup-Agent/standup-agent-plugin
 /plugin install standup-agent@standup-agent
 ```
 
 Чтобы вступить в команду, вставь в Claude Code обычным сообщением:
 
 ```
-Вступи в команду Backend в Standup Agent: standupagent.ai/join/K7X2M9QPLA
+Вступи в команду Backend в Standup Agent: standupagent.co/join/K7X2M9QPLA
 ```
 
 Нужен Node.js ≥ 22: на нём работают хуки плагина.

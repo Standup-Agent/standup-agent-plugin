@@ -74,7 +74,7 @@ var NET = {
   /** The server prompt is cached this long. */
   promptCacheHours: 24
 };
-var DEFAULT_API_BASE = "https://standupagent.ai/api";
+var DEFAULT_API_BASE = "https://standupagent.co/api";
 
 // src/log.ts
 var import_node_fs = require("node:fs");

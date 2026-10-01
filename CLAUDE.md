@@ -17,7 +17,7 @@
 plugin/                          # ← только это ставится пользователю
   .claude-plugin/plugin.json     # манифест
   hooks/hooks.json               # SessionStart, SessionEnd → node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js <cmd>
-  skills/join/SKILL.md           # (задача 4) узнаёт ссылку standupagent.ai/join/<CODE>
+  skills/join/SKILL.md           # (задача 4) узнаёт ссылку standupagent.co/join/<CODE>
   skills/standup/SKILL.md        # /standup: показ стендапа (4 кнопки), разметка репо (repos, repos scan)
   skills/synth/SKILL.md          # context: fork + background: false → субагент standup-synth синхронно
   agents/standup-synth.md        # субагент синтеза: материалы из `standup prepare`, шаг A → `standup save-digests`, возвращает только стендап + blocker_hint

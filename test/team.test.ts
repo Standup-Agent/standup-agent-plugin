@@ -10,14 +10,14 @@ import { tmp } from './helpers.js';
 
 describe('parseInvite', () => {
   it.each([
-    ['https://standupagent.ai/join/K7X2M9QPLA', 'K7X2M9QPLA', 'https://standupagent.ai/api'],
-    ['standupagent.ai/join/k7x2m9qpla.', 'K7X2M9QPLA', 'https://standupagent.ai/api'],
+    ['https://standupagent.co/join/K7X2M9QPLA', 'K7X2M9QPLA', 'https://standupagent.co/api'],
+    ['standupagent.co/join/k7x2m9qpla.', 'K7X2M9QPLA', 'https://standupagent.co/api'],
     ['https://abc.trycloudflare.com/join/K7X2M9QPLA»', 'K7X2M9QPLA', 'https://abc.trycloudflare.com/api'],
     ['127.0.0.1:8080/join/K7X2M9QPLA', 'K7X2M9QPLA', 'http://127.0.0.1:8080/api'],
-    ['K7X2M9QPLA', 'K7X2M9QPLA', 'https://standupagent.ai/api'],
+    ['K7X2M9QPLA', 'K7X2M9QPLA', 'https://standupagent.co/api'],
   ])('%s', (link, code, apiBase) => expect(parseInvite(link)).toEqual({ code, apiBase }));
 
-  it.each(['https://evil.com/other/K7X2M9QPLA', 'SHORT', 'standupagent.ai/join/'])('rejects %s', (link) => expect(parseInvite(link)).toBeNull());
+  it.each(['https://evil.com/other/K7X2M9QPLA', 'SHORT', 'standupagent.co/join/'])('rejects %s', (link) => expect(parseInvite(link)).toBeNull());
 });
 
 describe('join / leave against a server', () => {
