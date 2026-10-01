@@ -6,10 +6,12 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { enqueueEvent, enqueueReport, flush, type EventType, type Report, type ReportItem } from '../api.js';
-import { DEFAULTS } from '../config.js';
+import { findSessions } from '../capture/discover.js';
+import { runCapture } from '../capture/worker.js';
+import { CAPTURE, DEFAULTS } from '../config.js';
 import { writeFileAtomic } from '../fsutil.js';
 import { log } from '../log.js';
-import { dataDir } from '../paths.js';
+import { dataDir, paths } from '../paths.js';
 import { standupPrompt } from '../prompt.js';
 import { readState, updateState, workRepos } from '../state.js';
 import { collect, render } from './materials.js';
@@ -45,6 +47,23 @@ export async function standupCommand(args: string[], pluginRoot: string, now = n
  * Part 1 collects materials since last_checkin, remembers the period, marks the standup as being
  * shown (other terminals wait) and snoozes it until an answer comes; later parts come from the snapshot.
  */
+/**
+ * Sessions still open (this one too) or closed without SessionEnd hold work since their last
+ * capture: capture them now, so the standup sees today, not only what ended before it.
+ */
+async function captureFresh(from: Date): Promise<void> {
+  const state = readState();
+  const jobs = findSessions({
+    projectsDir: paths.claudeProjects(),
+    repos: workRepos(state),
+    sinceMs: from.getTime(),
+    captures: state.captures ?? {},
+    reason: 'standup',
+    max: CAPTURE.recoverMaxSessions,
+  });
+  if (jobs.length > 0) await runCapture(jobs);
+}
+
 async function prepare(args: string[], pluginRoot: string, now: Date): Promise<{ code: number; out: string }> {
   const partArg = args.indexOf('--part');
   const part = partArg >= 0 ? Number(args[partArg + 1]) : 1;
@@ -52,8 +71,9 @@ async function prepare(args: string[], pluginRoot: string, now: Date): Promise<{
 
   let parts: string[];
   if (part === 1) {
+    const from = periodFrom(readState(), now);
+    await captureFresh(from);
     const state = readState();
-    const from = periodFrom(state, now);
     const prompt = await standupPrompt(pluginRoot, now.getTime());
     parts = render(collect(from, now, workRepos(state)), prompt);
     writeFileAtomic(partsFile(), JSON.stringify(parts));

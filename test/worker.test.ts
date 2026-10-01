@@ -5,7 +5,7 @@ import { repoRoot } from '../src/capture/git.js';
 import { runCapture } from '../src/capture/worker.js';
 import { readState, type RepoKind } from '../src/state.js';
 import { rawPath, type RawCapture } from '../src/store.js';
-import { commit, git, makeRepo, tmp, tx, writeTranscript } from './helpers.js';
+import { commit, git, makeRepo, rawFile, tmp, tx, writeTranscript } from './helpers.js';
 
 const GHP = ['gh', 'p_', 'aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5'].join('');
 const SID = '11111111-2222-3333-4444-555555555555';
@@ -31,7 +31,7 @@ const storeFiles = (): string[] => {
   walk(join(data, 'digests'));
   return out;
 };
-const readRaw = (repo: string, branch: string, sid = SID): RawCapture => JSON.parse(readFileSync(rawPath(repo, branch, sid), 'utf8'));
+const readRaw = (repo: string, branch: string, sid = SID): RawCapture => JSON.parse(readFileSync(rawFile(repo, branch, sid), 'utf8'));
 
 /** A work session: repo on feature/PAY-42-webhooks with commits and a transcript. */
 function session(opts: { branch?: string; cwd?: (repo: string) => string } = {}) {
@@ -187,7 +187,7 @@ describe('capture worker', () => {
         { session_id: SID, transcript_path: s.transcript, cwd: s.cwd },
       ]),
     ).resolves.toBeUndefined();
-    expect(existsSync(rawPath(s.repo, s.branch, SID))).toBe(true);
+    expect(rawFile(s.repo, s.branch, SID)).not.toBe('');
     expect(logText()).toContain('transcript missing');
   });
 });

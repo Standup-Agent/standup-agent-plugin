@@ -26,7 +26,18 @@ export interface State {
   last_capture_at?: string;
   /** session_id → transcript mtime (ms) at its last capture. SessionStart recovery compares against it. */
   captures?: Record<string, number>;
+  /**
+   * Unmarked repos that sessions visited (a session started in a work repo and `cd`-ed into one).
+   * Paths only, no content. SessionStart asks about them; marking one `work` captures these sessions.
+   */
+  unmarked_seen?: Record<string, UnmarkedSeen>;
   [key: string]: unknown;
+}
+
+export interface UnmarkedSeen {
+  last_seen: string;
+  /** session_id → transcript path. */
+  sessions: Record<string, string>;
 }
 
 export interface StandupState {
@@ -120,18 +131,51 @@ export function recordCapture(sessionId: string, transcriptMtimeMs: number, now 
   });
 }
 
-/** Set work/personal for several repos at once. Returns the paths that became `work` just now. */
+/** Remember unmarked repos a session visited, so they can be asked about and captured later. */
+export function noteUnmarked(roots: string[], sessionId: string, transcriptPath: string, now = new Date()): void {
+  if (roots.length === 0) return;
+  updateState((s) => {
+    const seen = { ...(s.unmarked_seen ?? {}) };
+    for (const root of roots) {
+      if (s.repos?.[root]) continue;
+      const sessions = { ...(seen[root]?.sessions ?? {}), [sessionId]: transcriptPath };
+      const ids = Object.keys(sessions);
+      for (const id of ids.slice(0, Math.max(0, ids.length - CAPTURE.maxUnmarkedSessionsPerRepo))) delete sessions[id];
+      seen[root] = { last_seen: now.toISOString(), sessions };
+    }
+    // Repos not seen within the recovery window are forgotten.
+    const floor = now.getTime() - CAPTURE.recoverLookbackDays * 86_400_000;
+    for (const [root, v] of Object.entries(seen)) if (Date.parse(v.last_seen) < floor) delete seen[root];
+    s.unmarked_seen = seen;
+  });
+}
+
+/**
+ * Set work/personal for several repos at once. Returns the paths that became `work` just now, with
+ * the sessions that visited them while they were unmarked (to be captured now).
+ */
 export function setRepoKinds(kinds: Record<string, RepoKind>): string[] {
+  return setRepoKindsWithSessions(kinds).becameWork;
+}
+
+export function setRepoKindsWithSessions(kinds: Record<string, RepoKind>): { becameWork: string[]; sessions: Record<string, string> } {
   const becameWork: string[] = [];
+  const sessions: Record<string, string> = {};
   updateState((s) => {
     const repos = { ...(s.repos ?? {}) };
+    const seen = { ...(s.unmarked_seen ?? {}) };
     for (const [path, kind] of Object.entries(kinds)) {
-      if (kind === 'work' && repos[path] !== 'work') becameWork.push(path);
+      if (kind === 'work' && repos[path] !== 'work') {
+        becameWork.push(path);
+        Object.assign(sessions, seen[path]?.sessions ?? {});
+      }
       repos[path] = kind;
+      delete seen[path];
     }
     s.repos = repos;
+    s.unmarked_seen = seen;
   });
-  return becameWork;
+  return { becameWork, sessions };
 }
 
 /** Remember that we asked about a repo, so SessionStart never asks again. */

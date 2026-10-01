@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { rawPath } from '../src/store.js';
 
 export function tmp(prefix = 'sa-'): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -82,4 +83,19 @@ export function writeTranscript(
   );
   writeFileSync(path, lines.join('\n') + '\n');
   return path;
+}
+
+/** Raw files of a session on a branch (one per local day), newest day last. */
+export function rawFiles(repo: string, branch: string, sessionId: string): string[] {
+  const dir = dirname(rawPath(repo, branch, sessionId));
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f === `${sessionId}.json` || (f.startsWith(`${sessionId}_`) && f.endsWith('.json')))
+    .sort()
+    .map((f) => join(dir, f));
+}
+
+/** The only raw file of a session on a branch; empty string when there is none. */
+export function rawFile(repo: string, branch: string, sessionId: string): string {
+  return rawFiles(repo, branch, sessionId)[0] ?? '';
 }

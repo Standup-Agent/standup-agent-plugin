@@ -33,8 +33,11 @@ var import_node_path7 = require("node:path");
 var DEFAULTS = {
   /** Raw session capture is kept locally this long, then deleted. */
   rawTtlDays: 30,
-  /** Soft cap on text taken from one session transcript. */
-  rawMaxBytesPerSession: 64 * 1024,
+  /**
+   * Soft cap on text kept from one session for one repo, branch and day (a capture segment).
+   * Over it, the conversation is thinned turn by turn (capture/budget.ts), not cut in the middle.
+   */
+  rawMaxBytesPerSegment: 64 * 1024,
   /** Standup is not shown before this local hour. */
   showNotBeforeHour: 6,
   /** "Not now" postpones the standup for this long. */
@@ -51,6 +54,10 @@ var DEFAULTS = {
 var CAPTURE = {
   /** One message longer than this is cut; keeps a pasted log from eating the session budget. */
   maxBytesPerMessage: 8 * 1024,
+  /** One Claude Code compaction summary is cut to this. */
+  maxBytesPerSummary: 6 * 1024,
+  /** Unmarked repos a session visited: at most this many sessions remembered per repo for a later capture. */
+  maxUnmarkedSessionsPerRepo: 50,
   /** SessionStart recovery only looks at transcripts modified within this window. */
   recoverLookbackDays: 7,
   /** At most this many missed sessions are handed to one recovery worker. */
@@ -259,6 +266,24 @@ function addFound(into, from) {
   for (const [k, v] of Object.entries(from)) into[k] = (into[k] ?? 0) + v;
 }
 
+// src/standup/schedule.ts
+function localDate(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function periodFrom(state, now) {
+  const last = state.last_checkin ? new Date(state.last_checkin) : null;
+  return last && !Number.isNaN(last.getTime()) ? last : new Date(now.getTime() - DEFAULTS.joinBackfillDays * 864e5);
+}
+function gate(state, now) {
+  const s = state.standup ?? {};
+  if (now.getHours() < DEFAULTS.showNotBeforeHour) return "early";
+  if (s.done_date === localDate(now)) return "done_today";
+  if (s.showing_until && Date.parse(s.showing_until) > now.getTime()) return "showing";
+  if (s.snooze_until && Date.parse(s.snooze_until) > now.getTime()) return "snoozed";
+  return "ok";
+}
+
 // src/state.ts
 var import_node_fs3 = require("node:fs");
 var import_node_path4 = require("node:path");
@@ -341,17 +366,40 @@ function recordCapture(sessionId, transcriptMtimeMs, now = /* @__PURE__ */ new D
     s.last_capture_at = now.toISOString();
   });
 }
-function setRepoKinds(kinds) {
+function noteUnmarked(roots, sessionId, transcriptPath, now = /* @__PURE__ */ new Date()) {
+  if (roots.length === 0) return;
+  updateState((s) => {
+    const seen = { ...s.unmarked_seen ?? {} };
+    for (const root of roots) {
+      if (s.repos?.[root]) continue;
+      const sessions = { ...seen[root]?.sessions ?? {}, [sessionId]: transcriptPath };
+      const ids = Object.keys(sessions);
+      for (const id of ids.slice(0, Math.max(0, ids.length - CAPTURE.maxUnmarkedSessionsPerRepo))) delete sessions[id];
+      seen[root] = { last_seen: now.toISOString(), sessions };
+    }
+    const floor = now.getTime() - CAPTURE.recoverLookbackDays * 864e5;
+    for (const [root, v] of Object.entries(seen)) if (Date.parse(v.last_seen) < floor) delete seen[root];
+    s.unmarked_seen = seen;
+  });
+}
+function setRepoKindsWithSessions(kinds) {
   const becameWork = [];
+  const sessions = {};
   updateState((s) => {
     const repos = { ...s.repos ?? {} };
+    const seen = { ...s.unmarked_seen ?? {} };
     for (const [path, kind] of Object.entries(kinds)) {
-      if (kind === "work" && repos[path] !== "work") becameWork.push(path);
+      if (kind === "work" && repos[path] !== "work") {
+        becameWork.push(path);
+        Object.assign(sessions, seen[path]?.sessions ?? {});
+      }
       repos[path] = kind;
+      delete seen[path];
     }
     s.repos = repos;
+    s.unmarked_seen = seen;
   });
-  return becameWork;
+  return { becameWork, sessions };
 }
 function markRepoAsked(path, now = /* @__PURE__ */ new Date()) {
   updateState((s) => {
@@ -373,8 +421,38 @@ function branchKey(branch) {
 }
 var safeName = (s) => s.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "");
 var safeFile = (s) => s.replace(/[^A-Za-z0-9_-]/g, "_");
-function rawPath(repoPath, branch, sessionId) {
-  return (0, import_node_path5.join)(paths.digests(), repoKey(repoPath), branchKey(branch), "raw", `${safeFile(sessionId)}.json`);
+function rawPath(repoPath, branch, sessionId, segment) {
+  const name = segment ? `${safeFile(sessionId)}_${safeFile(segment)}` : safeFile(sessionId);
+  return (0, import_node_path5.join)(paths.digests(), repoKey(repoPath), branchKey(branch), "raw", `${name}.json`);
+}
+function removeSessionRaw(sessionId) {
+  const prefix = safeFile(sessionId);
+  let removed = 0;
+  for (const repo of listDirs(paths.digests())) {
+    for (const branch of listDirs((0, import_node_path5.join)(paths.digests(), repo))) {
+      const rawDir = (0, import_node_path5.join)(paths.digests(), repo, branch, "raw");
+      let files2;
+      try {
+        files2 = (0, import_node_fs4.readdirSync)(rawDir);
+      } catch {
+        continue;
+      }
+      for (const f of files2) {
+        if (f === `${prefix}.json` || f.startsWith(`${prefix}_`) && f.endsWith(".json")) {
+          (0, import_node_fs4.rmSync)((0, import_node_path5.join)(rawDir, f), { force: true });
+          removed++;
+        }
+      }
+    }
+  }
+  return removed;
+}
+function listDirs(dir) {
+  try {
+    return (0, import_node_fs4.readdirSync)(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
+  }
 }
 function digestPath(repoId, branch) {
   return (0, import_node_path5.join)(paths.digests(), repoId, branchKey(branch), "digest.md");
@@ -392,7 +470,7 @@ function writeDigest(repoId, branch, text) {
   writeFileAtomic(digestPath(repoId, branch), text.trim() + "\n");
 }
 function writeRaw(capture, now = /* @__PURE__ */ new Date()) {
-  const file = rawPath(capture.repo.path, capture.branch, capture.session_id);
+  const file = rawPath(capture.repo.path, capture.branch, capture.session_id, capture.segment);
   writeFileAtomic(file, JSON.stringify(capture, null, 2) + "\n");
   const last = new Date(capture.period.to);
   if (!Number.isNaN(last.getTime())) (0, import_node_fs4.utimesSync)(file, now, last);
@@ -441,6 +519,65 @@ function removeIfEmpty(dir) {
     (0, import_node_fs4.rmdirSync)(dir);
   } catch {
   }
+}
+
+// src/capture/budget.ts
+function fitTurns(messages, max, m, minCap) {
+  const sizes = messages.map((x) => m.size(x.text));
+  if (sizes.reduce((n, s) => n + s, 0) <= max) return { kept: messages, indices: messages.map((_, i) => i), dropped: 0, cut: 0 };
+  const essential = messages.map((x, i) => x.role === "user" || messages[i + 1]?.role !== "assistant");
+  const ess = sizes.filter((_, i) => essential[i]);
+  const cost = (cap) => ess.reduce((n, s) => n + Math.min(s, cap), 0);
+  const keep = /* @__PURE__ */ new Map();
+  let used = 0;
+  if (cost(minCap) <= max) {
+    let lo = minCap;
+    let hi = Math.max(minCap, ...ess);
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (cost(mid) <= max) lo = mid;
+      else hi = mid - 1;
+    }
+    messages.forEach((_, i) => {
+      if (essential[i]) {
+        keep.set(i, lo);
+        used += Math.min(sizes[i], lo);
+      }
+    });
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (keep.has(i)) continue;
+      const s = Math.min(sizes[i], lo);
+      if (used + s > max) continue;
+      keep.set(i, lo);
+      used += s;
+    }
+  } else {
+    const first = messages.findIndex((x) => x.role === "user");
+    if (first >= 0) {
+      keep.set(first, minCap);
+      used += Math.min(sizes[first], minCap);
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (keep.has(i) || !essential[i]) continue;
+      const s = Math.min(sizes[i], minCap);
+      if (used + s > max) break;
+      keep.set(i, minCap);
+      used += s;
+    }
+  }
+  const kept = [];
+  const indices = [];
+  let cut = 0;
+  messages.forEach((x, i) => {
+    const cap = keep.get(i);
+    if (cap === void 0) return;
+    indices.push(i);
+    if (sizes[i] > cap) {
+      kept.push({ ...x, text: m.cut(x.text, cap) });
+      cut++;
+    } else kept.push(x);
+  });
+  return { kept, indices, dropped: messages.length - kept.length, cut };
 }
 
 // src/capture/git.ts
@@ -563,7 +700,8 @@ var IGNORED_TYPES = /* @__PURE__ */ new Set([
   "queue-operation",
   "tag",
   "agent-name",
-  "pr-link"
+  "pr-link",
+  "file-history-delta"
 ]);
 var USER_NOISE = [
   "<command-name>",
@@ -600,11 +738,13 @@ async function readTranscriptCwd(path) {
   return void 0;
 }
 async function readTranscript(path, opts) {
-  const out = { messages: [], dropped: 0, cut: 0 };
+  const out = { messages: [], compactSummaries: [], rejected: 0, dropped: 0, cut: 0 };
   const unknown = {};
   let badLines = 0;
   let branch;
-  const hardCap = Math.max(opts.maxBytes, opts.maxBytesPerMessage);
+  let cwd = opts.defaultCwd;
+  let tainted = false;
+  const hardCap = Math.max(opts.maxBytes ?? 0, opts.maxBytesPerMessage, opts.maxBytesPerSummary ?? 0);
   const rl = (0, import_node_readline.createInterface)({ input: (0, import_node_fs5.createReadStream)(path, { encoding: "utf8" }), crlfDelay: Infinity });
   for await (const line of rl) {
     if (line.trim() === "") continue;
@@ -629,7 +769,23 @@ async function readTranscript(path, opts) {
     out.cwd = str(entry.cwd) ?? out.cwd;
     out.version = str(entry.version) ?? out.version;
     branch = str(entry.gitBranch) ?? branch;
+    cwd = str(entry.cwd) ?? cwd;
+    if (opts.accept && !opts.accept(cwd)) {
+      out.rejected++;
+      tainted = true;
+      continue;
+    }
     const type = str(entry.type) ?? "";
+    if (type === "user" && entry.isCompactSummary && !entry.isSidechain) {
+      if (opts.maxBytesPerSummary && !tainted) {
+        const raw = contentTexts(entry).join("\n");
+        let text = cutBytes(raw, hardCap).text.trim();
+        if (opts.transform) text = opts.transform(text);
+        text = cutBytes(text, opts.maxBytesPerSummary).text;
+        if (text) out.compactSummaries.push({ text, ...ts && { ts }, ...branch && { branch }, ...cwd && { cwd } });
+      }
+      continue;
+    }
     let texts;
     if (type === "user") texts = userTexts(entry);
     else if (type === "assistant") texts = assistantTexts(entry);
@@ -649,10 +805,16 @@ async function readTranscript(path, opts) {
       const msg = { role: type, text: cut.text };
       if (ts) msg.ts = ts;
       if (branch) msg.branch = branch;
+      if (cwd) msg.cwd = cwd;
       out.messages.push(msg);
     }
   }
-  applyBudget(out, opts.maxBytes);
+  if (opts.maxBytes !== void 0) {
+    const fitted = fitTurns(out.messages, opts.maxBytes, BYTES, MIN_CAP_BYTES);
+    out.messages = fitted.kept;
+    out.dropped += fitted.dropped;
+    out.cut += fitted.cut;
+  }
   if (badLines > 0 || Object.keys(unknown).length > 0) {
     log("info", "transcript: skipped unrecognized entries", { badLines, unknownTypes: unknown, version: out.version });
   }
@@ -699,27 +861,17 @@ function cutBytes(text, max) {
   const head = Buffer.from(text, "utf8").subarray(0, room).toString("utf8").replace(/�+$/, "");
   return { text: head + TRUNCATED, cut: true };
 }
-function applyBudget(t, maxBytes) {
-  const size = (m) => Buffer.byteLength(m.text, "utf8");
-  const total = t.messages.reduce((n, m) => n + size(m), 0);
-  if (total <= maxBytes) return;
-  const firstUser = t.messages.findIndex((m) => m.role === "user");
-  const keep = /* @__PURE__ */ new Set();
-  let used = 0;
-  if (firstUser >= 0) {
-    keep.add(firstUser);
-    used += size(t.messages[firstUser]);
-  }
-  for (let i = t.messages.length - 1; i >= 0; i--) {
-    if (keep.has(i)) continue;
-    const s = size(t.messages[i]);
-    if (used + s > maxBytes) break;
-    keep.add(i);
-    used += s;
-  }
-  const kept = t.messages.filter((_, i) => keep.has(i));
-  t.dropped += t.messages.length - kept.length;
-  t.messages = kept;
+var MIN_CAP_BYTES = 200;
+var BYTES = {
+  size: (t) => Buffer.byteLength(t, "utf8"),
+  cut: (t, max) => cutBytes(t, max).text
+};
+function contentTexts(e) {
+  const msg = e.message;
+  if (!isObj(msg)) return [];
+  if (typeof msg.content === "string") return [msg.content];
+  if (!Array.isArray(msg.content)) return [];
+  return msg.content.filter((b) => isObj(b) && b.type === "text" && typeof b.text === "string").map((b) => b.text);
 }
 
 // src/capture/worker.ts
@@ -750,44 +902,77 @@ async function captureSession(job, now = /* @__PURE__ */ new Date()) {
     recordCapture(job.session_id, mtimeMs, now);
     log("info", `capture: skipped, ${skip}`, { session, reason: job.reason });
   };
-  const cwd = job.cwd ?? await readTranscriptCwd(job.transcript_path);
-  if (!cwd) return done("no cwd");
-  const root = repoRoot(cwd);
-  if (!root) return done("not a git repo");
-  const repo = markedWorkRepo(root, readState());
-  if (!repo) return done("repo is not marked as work");
+  const state = readState();
+  const roots = /* @__PURE__ */ new Map();
+  const rootOf = (cwd) => {
+    if (!roots.has(cwd)) roots.set(cwd, repoRoot(cwd));
+    return roots.get(cwd);
+  };
+  const works = /* @__PURE__ */ new Map();
+  const unmarked = /* @__PURE__ */ new Set();
+  let sawRepo = false;
+  const workOf = (cwd) => {
+    const root = cwd ? rootOf(cwd) : null;
+    if (!root) return null;
+    sawRepo = true;
+    if (!works.has(root)) {
+      const repo = markedWorkRepo(root, state);
+      works.set(root, repo);
+      if (!repo && !isMarked(root, state)) unmarked.add(root);
+    }
+    return works.get(root);
+  };
   const redacted = {};
   const transcript = await readTranscript(job.transcript_path, {
-    maxBytes: DEFAULTS.rawMaxBytesPerSession,
     maxBytesPerMessage: CAPTURE.maxBytesPerMessage,
+    maxBytesPerSummary: CAPTURE.maxBytesPerSummary,
+    defaultCwd: job.cwd,
+    accept: (cwd) => workOf(cwd) !== null,
     transform: (text) => {
       const r = redactSecrets(text);
       addFound(redacted, r.found);
       return r.text;
     }
   });
-  const fallbackBranch = currentBranch(root) ?? "HEAD";
+  noteUnmarked([...unmarked], job.session_id, job.transcript_path, now);
+  removeSessionRaw(job.session_id);
   const fallbackTs = new Date(mtimeMs).toISOString();
+  const segments = groupSegments(transcript.messages, workOf, (repo) => currentBranch(repo) ?? "HEAD", fallbackTs);
+  if (segments.size === 0) {
+    const repo = workOf(transcript.cwd ?? job.cwd);
+    if (!repo) return done(sawRepo ? "repo is not marked as work" : "not a git repo");
+    const day = localDate(new Date(transcript.lastTs ?? fallbackTs));
+    segments.set(`${repo}\0${currentBranch(repo) ?? "HEAD"}\0${day}`, { repo, branch: currentBranch(repo) ?? "HEAD", day, messages: [] });
+  }
   let written = 0;
   let commits = 0;
-  for (const [branch, messages] of groupByBranch(transcript.messages, fallbackBranch)) {
-    const times = messages.map((m) => m.ts).filter((t) => !!t).sort((a, b) => Date.parse(a) - Date.parse(b));
+  let dropped = 0;
+  let cut = transcript.cut;
+  for (const seg of segments.values()) {
+    const times = seg.messages.map((m) => m.ts).filter((t) => !!t).sort((a, b) => Date.parse(a) - Date.parse(b));
     const from = times[0] ?? transcript.firstTs ?? fallbackTs;
     const to = times[times.length - 1] ?? transcript.lastTs ?? fallbackTs;
     const until = new Date(new Date(to).getTime() + CAPTURE.commitSlackMinutes * 6e4);
-    const activity = branchActivity(root, branch, new Date(from), until);
-    if (messages.length === 0 && activity.commits.length === 0) continue;
+    const activity = branchActivity(seg.repo, seg.branch, new Date(from), until);
+    if (seg.messages.length === 0 && activity.commits.length === 0) continue;
+    const fitted = fitTurns(seg.messages, DEFAULTS.rawMaxBytesPerSegment, BYTES, MIN_CAP_BYTES);
+    dropped += fitted.dropped;
+    cut += fitted.cut;
+    const summaries = transcript.compactSummaries.filter(
+      (c) => (c.cwd ? workOf(c.cwd) : null) === seg.repo && (c.branch && c.branch !== "HEAD" ? c.branch : seg.branch) === seg.branch && c.ts && localDate(new Date(c.ts)) === seg.day
+    );
     const capture = {
       schema: 1,
       session_id: job.session_id,
-      repo: { path: repo, name: (0, import_node_path7.basename)(repo) },
-      branch,
+      repo: { path: seg.repo, name: (0, import_node_path7.basename)(seg.repo) },
+      branch: seg.branch,
+      segment: seg.day,
       captured_at: now.toISOString(),
       period: { from, to },
       cc_version: transcript.version,
       reason: job.reason,
-      messages: messages.map((m) => ({ role: m.role, ts: m.ts, text: m.text })),
-      truncated: { dropped: transcript.dropped, cut: transcript.cut },
+      messages: fitted.kept.map((m) => ({ role: m.role, ts: m.ts, text: m.text })),
+      truncated: { dropped: fitted.dropped, cut: fitted.cut },
       commits: activity.commits.map((c) => {
         const r = redactSecrets(c.message);
         addFound(redacted, r.found);
@@ -797,6 +982,7 @@ async function captureSession(job, now = /* @__PURE__ */ new Date()) {
       tickets: activity.tickets,
       redacted: {}
     };
+    if (summaries.length) capture.compact_summaries = summaries.map((c) => ({ ts: c.ts, text: c.text }));
     capture.redacted = { ...redacted };
     writeRaw(capture, now);
     written++;
@@ -806,11 +992,15 @@ async function captureSession(job, now = /* @__PURE__ */ new Date()) {
   log("info", "capture: done", {
     session,
     reason: job.reason,
-    repo: (0, import_node_path7.basename)(repo),
-    branches: written,
+    repos: [...new Set([...segments.values()].map((g) => (0, import_node_path7.basename)(g.repo)))],
+    segments: written,
     messages: transcript.messages.length,
     commits,
-    dropped: transcript.dropped,
+    dropped,
+    cut,
+    summaries: transcript.compactSummaries.length,
+    skipped_entries: transcript.rejected,
+    unmarked_repos: unmarked.size,
     redacted
   });
 }
@@ -819,15 +1009,25 @@ function markedWorkRepo(root, state) {
   const main2 = mainWorktreeRoot(root);
   return main2 && isWorkRepo(main2, state) ? main2 : null;
 }
-function groupByBranch(messages, fallback2) {
+function isMarked(root, state) {
+  if (state.repos?.[root]) return true;
+  const main2 = mainWorktreeRoot(root);
+  return !!main2 && !!state.repos?.[main2];
+}
+function groupSegments(messages, workOf, branchOf, fallbackTs) {
   const groups = /* @__PURE__ */ new Map();
+  let lastTs = fallbackTs;
   for (const m of messages) {
-    const b = m.branch && m.branch !== "HEAD" ? m.branch : fallback2;
-    let list2 = groups.get(b);
-    if (!list2) groups.set(b, list2 = []);
-    list2.push(m);
+    const repo = workOf(m.cwd);
+    if (!repo) continue;
+    lastTs = m.ts ?? lastTs;
+    const branch = m.branch && m.branch !== "HEAD" ? m.branch : branchOf(repo);
+    const day = localDate(new Date(lastTs));
+    const key = `${repo}\0${branch}\0${day}`;
+    let g = groups.get(key);
+    if (!g) groups.set(key, g = { repo, branch, day, messages: [] });
+    g.messages.push(m);
   }
-  if (groups.size === 0) groups.set(fallback2, []);
   return groups;
 }
 
@@ -1077,8 +1277,8 @@ async function scan(cliPath, now) {
   const state = readState();
   const found = classify(await scanRepos(paths.claudeProjects(), DEFAULTS.repoScanDays, now), state);
   if (found.autoWork.length > 0) {
-    const becameWork = setRepoKinds(Object.fromEntries(found.autoWork.map((r) => [r.path, "work"])));
-    backfill(becameWork, cliPath, now);
+    const { becameWork, sessions } = setRepoKindsWithSessions(Object.fromEntries(found.autoWork.map((r) => [r.path, "work"])));
+    backfill(becameWork, cliPath, now, sessions);
   }
   log("info", "repos: scan", { found: found.marked.length + found.autoWork.length + found.ask.length, auto: found.autoWork.length, ask: found.ask.length });
   return {
@@ -1101,8 +1301,8 @@ function set(pairs, cliPath, now) {
     kinds[repoOf(path)?.path ?? path] = kind;
   }
   if (Object.keys(kinds).length === 0) return { code: 1, out: { error: "nothing to set" } };
-  const becameWork = setRepoKinds(kinds);
-  const backfilled = backfill(becameWork, cliPath, now);
+  const { becameWork, sessions } = setRepoKindsWithSessions(kinds);
+  const backfilled = backfill(becameWork, cliPath, now, sessions);
   log("info", "repos: set", { work: Object.values(kinds).filter((k) => k === "work").length, personal: Object.values(kinds).filter((k) => k === "personal").length, backfilled });
   return { code: 0, out: { updated: kinds, backfill_sessions: backfilled } };
 }
@@ -1113,15 +1313,18 @@ function list() {
     repos: Object.entries(state.repos ?? {}).map(([path, kind]) => ({ path, kind }))
   };
 }
-function backfill(repos, cliPath, now) {
+function backfill(repos, cliPath, now, visited = {}) {
   if (repos.length === 0) return 0;
-  const jobs = findSessions({
+  const found = findSessions({
     projectsDir: paths.claudeProjects(),
     repos,
     sinceMs: now - DEFAULTS.joinBackfillDays * 864e5,
     reason: "backfill",
     max: CAPTURE.backfillMaxSessions
   });
+  const ids = new Set(found.map((j) => j.session_id));
+  const extra = Object.entries(visited).filter(([id]) => !ids.has(id)).map(([id, path]) => ({ session_id: id, transcript_path: path, reason: "backfill" }));
+  const jobs = [...found, ...extra];
   spawnCapture(cliPath, jobs);
   return jobs.length;
 }
@@ -1345,7 +1548,9 @@ function devLanguage(captures) {
 function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
   const head = [`# Prompt (prompt_version: ${prompt.version})`, prompt.text.trim(), "", "# Input", `period: {from: ${m.from}, to: ${m.to}}`, `dev_language: ${devLanguage(m.captures)}`, ""];
   const body = [];
-  const perSession = Math.max(2e3, Math.floor(maxChars / Math.max(1, m.captures.length)));
+  const sizeOf = (c) => c.messages.reduce((n, x) => n + x.text.length, 0) + (c.compact_summaries ?? []).reduce((n, x) => n + x.text.length, 0);
+  const total = m.captures.reduce((n, c) => n + sizeOf(c), 0);
+  const budgetOf = (c) => total <= maxChars ? Infinity : Math.max(2e3, Math.floor(maxChars * sizeOf(c) / total));
   const branches = /* @__PURE__ */ new Map();
   const get = (repo, repoPath, branch) => {
     const repoId = repoKey(repoPath);
@@ -1361,7 +1566,7 @@ function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
     body.push(`## repo: ${b.repo} \xB7 repo_id: ${b.repoId} \xB7 branch: ${b.branch}${tickets.length ? ` \xB7 ticket: ${tickets.join(", ")}` : ""}`);
     const digest = readDigest(b.repoId, b.branch).trim();
     body.push("existing_digest:", digest || "(empty)", "", "raw entries:");
-    const commits = b.caps.flatMap((c) => c.commits);
+    const commits = [...new Map(b.caps.flatMap((c) => c.commits).map((k) => [k.sha, k])).values()].sort((x, y) => x.ts.localeCompare(y.ts));
     if (commits.length) {
       body.push("commits:");
       for (const k of commits) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message.split("\n")[0]}`);
@@ -1370,7 +1575,7 @@ function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
     if (files2.length) body.push(`changed files: ${files2.slice(0, 30).join(", ")}${files2.length > 30 ? ` (+${files2.length - 30})` : ""}`);
     for (const c of b.caps) {
       body.push(`session ${c.period.from.slice(0, 16)} \u2014 ${c.period.to.slice(11, 16)}:`);
-      body.push(...sessionLines(c, perSession));
+      body.push(...sessionLines(c, budgetOf(c)));
     }
     if (b.outside.length) {
       body.push("commits_outside_sessions:");
@@ -1381,24 +1586,26 @@ function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
   if (body.length === 0) body.push("No work found since the last standup.");
   return split([...head, ...body]);
 }
+var OMITTED = "\u2026 (part of the conversation omitted)";
+var CUT = "\u2026[cut]";
+var CHARS = { size: (t) => t.length, cut: (t, max) => t.slice(0, Math.max(0, max - CUT.length)) + CUT };
+var MIN_CAP_CHARS = 150;
+var SUMMARY_SHARE = 0.3;
 function sessionLines(c, budget) {
-  const line = (m) => `${m.role === "user" ? "> developer" : "< claude"}: ${m.text.replace(/\n{3,}/g, "\n\n")}`;
-  const lines = c.messages.map(line);
-  const total = lines.reduce((n, l) => n + l.length, 0);
-  if (total <= budget) return lines;
-  const first = c.messages.findIndex((m) => m.role === "user");
-  const keep = new Set(first >= 0 ? [first] : []);
-  let used = first >= 0 ? lines[first].length : 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (keep.has(i)) continue;
-    if (used + lines[i].length > budget) break;
-    keep.add(i);
-    used += lines[i].length;
-  }
   const out = [];
-  lines.forEach((l, i) => {
-    if (keep.has(i)) out.push(l);
-    else if (out[out.length - 1] !== "\u2026 (part of the conversation omitted)") out.push("\u2026 (part of the conversation omitted)");
+  let room = budget;
+  for (const s of c.compact_summaries ?? []) {
+    const text = room === Infinity ? s.text : CHARS.size(s.text) > budget * SUMMARY_SHARE ? CHARS.cut(s.text, Math.floor(budget * SUMMARY_SHARE)) : s.text;
+    out.push(`(Claude Code's summary of the conversation so far${s.ts ? `, ${s.ts.slice(0, 16)}` : ""}): ${text.replace(/\n{3,}/g, "\n\n")}`);
+    room -= text.length;
+  }
+  const msgs = c.messages.map((m) => ({ ...m, text: m.text.replace(/\n{3,}/g, "\n\n") }));
+  const fitted = fitTurns(msgs, room === Infinity ? Infinity : Math.max(room, MIN_CAP_CHARS * 4), CHARS, MIN_CAP_CHARS);
+  const at = new Map(fitted.indices.map((i, k) => [i, fitted.kept[k]]));
+  msgs.forEach((_, i) => {
+    const m = at.get(i);
+    if (m) out.push(`${m.role === "user" ? "> developer" : "< claude"}: ${m.text}`);
+    else if (out[out.length - 1] !== OMITTED) out.push(OMITTED);
   });
   return out;
 }
@@ -1451,24 +1658,6 @@ var files = (d) => {
   }
 };
 
-// src/standup/schedule.ts
-function localDate(d) {
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-function periodFrom(state, now) {
-  const last = state.last_checkin ? new Date(state.last_checkin) : null;
-  return last && !Number.isNaN(last.getTime()) ? last : new Date(now.getTime() - DEFAULTS.joinBackfillDays * 864e5);
-}
-function gate(state, now) {
-  const s = state.standup ?? {};
-  if (now.getHours() < DEFAULTS.showNotBeforeHour) return "early";
-  if (s.done_date === localDate(now)) return "done_today";
-  if (s.showing_until && Date.parse(s.showing_until) > now.getTime()) return "showing";
-  if (s.snooze_until && Date.parse(s.snooze_until) > now.getTime()) return "snoozed";
-  return "ok";
-}
-
 // src/standup/commands.ts
 var H = 36e5;
 var partsFile = () => (0, import_node_path16.join)(dataDir(), "standup-materials.json");
@@ -1493,14 +1682,27 @@ async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date()
       return { code: 1, out: "usage: standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker" };
   }
 }
+async function captureFresh(from) {
+  const state = readState();
+  const jobs = findSessions({
+    projectsDir: paths.claudeProjects(),
+    repos: workRepos(state),
+    sinceMs: from.getTime(),
+    captures: state.captures ?? {},
+    reason: "standup",
+    max: CAPTURE.recoverMaxSessions
+  });
+  if (jobs.length > 0) await runCapture(jobs);
+}
 async function prepare(args, pluginRoot, now) {
   const partArg = args.indexOf("--part");
   const part = partArg >= 0 ? Number(args[partArg + 1]) : 1;
   if (!Number.isInteger(part) || part < 1) return { code: 1, out: "usage: standup prepare [--part N]" };
   let parts;
   if (part === 1) {
+    const from = periodFrom(readState(), now);
+    await captureFresh(from);
     const state = readState();
-    const from = periodFrom(state, now);
     const prompt = await standupPrompt(pluginRoot, now.getTime());
     parts = render(collect(from, now, workRepos(state)), prompt);
     writeFileAtomic(partsFile(), JSON.stringify(parts));
@@ -1713,26 +1915,42 @@ function findMissedSessions(input, now = Date.now()) {
 function projectsDirFor(input) {
   return input.transcript_path ? (0, import_node_path17.dirname)((0, import_node_path17.dirname)(input.transcript_path)) : paths.claudeProjects();
 }
-function newRepoCheck(input, cliPath, state = readState()) {
-  if (!state.team || !input.cwd) return null;
-  const repo = repoOf(input.cwd);
-  if (!repo || state.repos?.[repo.path] || state.repos_asked?.[repo.path]) return null;
+function newRepoCheck(input, cliPath, state = readState(), now = Date.now()) {
+  if (!state.team) return null;
+  const fresh = (r) => !!r && !state.repos?.[r.path] && !state.repos_asked?.[r.path];
+  let repo = input.cwd ? repoOf(input.cwd) : null;
+  let visited = false;
+  if (!fresh(repo)) {
+    repo = null;
+    const seen = Object.entries(state.unmarked_seen ?? {}).sort((a, b) => b[1].last_seen.localeCompare(a[1].last_seen));
+    for (const [path] of seen) {
+      const r = repoOf(path);
+      if (fresh(r) && r.path === path) {
+        repo = r;
+        visited = true;
+        break;
+      }
+    }
+    if (!repo) return null;
+  }
   if (matchesWorkOrg(repo.remotes, state.team.work_orgs ?? [])) {
-    setRepoKinds({ [repo.path]: "work" });
+    const { becameWork, sessions } = setRepoKindsWithSessions({ [repo.path]: "work" });
+    if (visited || Object.keys(sessions).length > 0) backfill(becameWork, cliPath, now, sessions);
     log("info", "repos: marked work by org", { repo: repo.name });
     return { systemMessage: `\u{1F4CB} Standup Agent: ${repo.name} belongs to your team\u2019s org \u2014 included in your standup` };
   }
   markRepoAsked(repo.path);
-  log("info", "repos: asking about a new repo", { repo: repo.name });
+  log("info", "repos: asking about a new repo", { repo: repo.name, visited });
   return {
-    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: askAboutRepo(repo, state.team.name) }
+    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: askAboutRepo(repo, state.team.name, visited) }
   };
 }
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-function askAboutRepo(repo, teamName) {
+function askAboutRepo(repo, teamName, visited = false) {
   const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : " (no remote)";
   const set2 = (kind) => `call the Skill tool: skill \xABstandup-agent:standup\xBB, args \xABrepos set ${sq(`${repo.path}=${kind}`)}\xBB`;
-  return `[Standup Agent] The user is working in the repo ${repo.name}${where} for the first time since joining the team${teamName ? ` \xAB${teamName}\xBB` : ""}. This question is asked once. Ask it in the user's language: the quoted texts below are English templates.
+  const what = visited ? `In an earlier Claude Code session the user also worked in the repo ${repo.name}${where} (${repo.path}), which isn't marked yet` : `The user is working in the repo ${repo.name}${where} for the first time since joining the team${teamName ? ` \xAB${teamName}\xBB` : ""}`;
+  return `[Standup Agent] ${what}. This question is asked once. Ask it in the user's language: the quoted texts below are English templates.
 
 Before doing the user's first request, call AskUserQuestion: question \xABInclude ${repo.name} in your standup?\xBB, header \xABStandup\xBB, two options:
 - \xABYes, it\u2019s work\xBB \u2014 description: work in this repo goes into your standup draft (your manager only sees what you confirm);

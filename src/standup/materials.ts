@@ -9,6 +9,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { CAPTURE, DEFAULTS } from '../config.js';
 import { paths } from '../paths.js';
+import { fitTurns } from '../capture/budget.js';
 import { cutBytes } from '../capture/transcript.js';
 import { readDigest, repoKey, type RawCapture } from '../store.js';
 
@@ -116,7 +117,10 @@ export function devLanguage(captures: RawCapture[]): string {
 export function render(m: Materials, prompt: { version: string; text: string }, maxChars: number = DEFAULTS.synthMaxChars): string[] {
   const head = [`# Prompt (prompt_version: ${prompt.version})`, prompt.text.trim(), '', '# Input', `period: {from: ${m.from}, to: ${m.to}}`, `dev_language: ${devLanguage(m.captures)}`, ''];
   const body: string[] = [];
-  const perSession = Math.max(2_000, Math.floor(maxChars / Math.max(1, m.captures.length)));
+  // Over the limit, each capture gets a share proportional to its size: a long day keeps more.
+  const sizeOf = (c: RawCapture) => c.messages.reduce((n, x) => n + x.text.length, 0) + (c.compact_summaries ?? []).reduce((n, x) => n + x.text.length, 0);
+  const total = m.captures.reduce((n, c) => n + sizeOf(c), 0);
+  const budgetOf = (c: RawCapture) => (total <= maxChars ? Infinity : Math.max(2_000, Math.floor((maxChars * sizeOf(c)) / total)));
 
   // Branches with new entries: from captures and from commits made outside sessions.
   type Branch = { repo: string; repoId: string; branch: string; caps: RawCapture[]; outside: OutsideCommit[] };
@@ -136,7 +140,8 @@ export function render(m: Materials, prompt: { version: string; text: string }, 
     body.push(`## repo: ${b.repo} · repo_id: ${b.repoId} · branch: ${b.branch}${tickets.length ? ` · ticket: ${tickets.join(', ')}` : ''}`);
     const digest = readDigest(b.repoId, b.branch).trim();
     body.push('existing_digest:', digest || '(empty)', '', 'raw entries:');
-    const commits = b.caps.flatMap((c) => c.commits);
+    // Two sessions on the same branch and day can both hold a commit.
+    const commits = [...new Map(b.caps.flatMap((c) => c.commits).map((k) => [k.sha, k])).values()].sort((x, y) => x.ts.localeCompare(y.ts));
     if (commits.length) {
       body.push('commits:');
       for (const k of commits) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message.split('\n')[0]}`);
@@ -145,7 +150,7 @@ export function render(m: Materials, prompt: { version: string; text: string }, 
     if (files.length) body.push(`changed files: ${files.slice(0, 30).join(', ')}${files.length > 30 ? ` (+${files.length - 30})` : ''}`);
     for (const c of b.caps) {
       body.push(`session ${c.period.from.slice(0, 16)} — ${c.period.to.slice(11, 16)}:`);
-      body.push(...sessionLines(c, perSession));
+      body.push(...sessionLines(c, budgetOf(c)));
     }
     if (b.outside.length) {
       body.push('commits_outside_sessions:');
@@ -157,25 +162,33 @@ export function render(m: Materials, prompt: { version: string; text: string }, 
   return split([...head, ...body]);
 }
 
-/** First user message (the task) and the latest messages that fit: the middle goes first. */
+const OMITTED = '… (part of the conversation omitted)';
+const CUT = '…[cut]';
+const CHARS = { size: (t: string) => t.length, cut: (t: string, max: number) => t.slice(0, Math.max(0, max - CUT.length)) + CUT };
+/** Smallest per-message cap in characters when a capture is squeezed. */
+const MIN_CAP_CHARS = 150;
+/** A compaction summary takes at most this share of a capture's budget. */
+const SUMMARY_SHARE = 0.3;
+
+/**
+ * Every developer prompt and Claude's result of every turn, thinned evenly to fit (capture/budget.ts);
+ * Claude Code's compaction summaries come first: they cover what the thinned middle lost.
+ */
 function sessionLines(c: RawCapture, budget: number): string[] {
-  const line = (m: RawCapture['messages'][number]) => `${m.role === 'user' ? '> developer' : '< claude'}: ${m.text.replace(/\n{3,}/g, '\n\n')}`;
-  const lines = c.messages.map(line);
-  const total = lines.reduce((n, l) => n + l.length, 0);
-  if (total <= budget) return lines;
-  const first = c.messages.findIndex((m) => m.role === 'user');
-  const keep = new Set<number>(first >= 0 ? [first] : []);
-  let used = first >= 0 ? lines[first]!.length : 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (keep.has(i)) continue;
-    if (used + lines[i]!.length > budget) break;
-    keep.add(i);
-    used += lines[i]!.length;
-  }
   const out: string[] = [];
-  lines.forEach((l, i) => {
-    if (keep.has(i)) out.push(l);
-    else if (out[out.length - 1] !== '… (part of the conversation omitted)') out.push('… (part of the conversation omitted)');
+  let room = budget;
+  for (const s of c.compact_summaries ?? []) {
+    const text = room === Infinity ? s.text : CHARS.size(s.text) > budget * SUMMARY_SHARE ? CHARS.cut(s.text, Math.floor(budget * SUMMARY_SHARE)) : s.text;
+    out.push(`(Claude Code's summary of the conversation so far${s.ts ? `, ${s.ts.slice(0, 16)}` : ''}): ${text.replace(/\n{3,}/g, '\n\n')}`);
+    room -= text.length;
+  }
+  const msgs = c.messages.map((m) => ({ ...m, text: m.text.replace(/\n{3,}/g, '\n\n') }));
+  const fitted = fitTurns(msgs, room === Infinity ? Infinity : Math.max(room, MIN_CAP_CHARS * 4), CHARS, MIN_CAP_CHARS);
+  const at = new Map(fitted.indices.map((i, k) => [i, fitted.kept[k]!]));
+  msgs.forEach((_, i) => {
+    const m = at.get(i);
+    if (m) out.push(`${m.role === 'user' ? '> developer' : '< claude'}: ${m.text}`);
+    else if (out[out.length - 1] !== OMITTED) out.push(OMITTED);
   });
   return out;
 }

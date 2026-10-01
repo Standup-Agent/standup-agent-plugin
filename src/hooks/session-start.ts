@@ -11,7 +11,8 @@ import { paths } from '../paths.js';
 import { matchesWorkOrg, repoOf, type Repo } from '../repos.js';
 import { outsideCommits, rawFilesSince } from '../standup/materials.js';
 import { gate, localDate, periodFrom } from '../standup/schedule.js';
-import { markRepoAsked, readState, setRepoKinds, updateState, workRepos, type State } from '../state.js';
+import { backfill } from '../commands/repos.js';
+import { markRepoAsked, readState, setRepoKindsWithSessions, updateState, workRepos, type State } from '../state.js';
 
 export { projectDirName } from '../capture/discover.js';
 
@@ -132,32 +133,52 @@ export function projectsDirFor(input: HookInput): string {
 /**
  * Only after joining a team (before that nothing is captured anyway). An unmarked repo whose
  * remote is in a work org becomes `work` silently; any other unmarked repo is asked about once.
+ * First the repo of this session's cwd, then the newest unmarked repo an earlier session `cd`-ed
+ * into (state.unmarked_seen) — one question per session start at most.
  */
-export function newRepoCheck(input: HookInput, cliPath: string, state: State = readState()): SessionStartOutput | null {
-  if (!state.team || !input.cwd) return null;
-  const repo = repoOf(input.cwd);
-  if (!repo || state.repos?.[repo.path] || state.repos_asked?.[repo.path]) return null;
+export function newRepoCheck(input: HookInput, cliPath: string, state: State = readState(), now = Date.now()): SessionStartOutput | null {
+  if (!state.team) return null;
+  const fresh = (r: Repo | null): r is Repo => !!r && !state.repos?.[r.path] && !state.repos_asked?.[r.path];
+  let repo = input.cwd ? repoOf(input.cwd) : null;
+  let visited = false;
+  if (!fresh(repo)) {
+    repo = null;
+    const seen = Object.entries(state.unmarked_seen ?? {}).sort((a, b) => b[1].last_seen.localeCompare(a[1].last_seen));
+    for (const [path] of seen) {
+      const r = repoOf(path);
+      if (fresh(r) && r.path === path) {
+        repo = r;
+        visited = true;
+        break;
+      }
+    }
+    if (!repo) return null;
+  }
 
   if (matchesWorkOrg(repo.remotes, state.team.work_orgs ?? [])) {
-    setRepoKinds({ [repo.path]: 'work' });
+    const { becameWork, sessions } = setRepoKindsWithSessions({ [repo.path]: 'work' });
+    if (visited || Object.keys(sessions).length > 0) backfill(becameWork, cliPath, now, sessions);
     log('info', 'repos: marked work by org', { repo: repo.name });
     return { systemMessage: `📋 Standup Agent: ${repo.name} belongs to your team’s org — included in your standup` };
   }
 
   markRepoAsked(repo.path);
-  log('info', 'repos: asking about a new repo', { repo: repo.name });
+  log('info', 'repos: asking about a new repo', { repo: repo.name, visited });
   return {
-    hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: askAboutRepo(repo, state.team.name) },
+    hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: askAboutRepo(repo, state.team.name, visited) },
   };
 }
 
 /** Shell-quote for a POSIX shell. */
 export const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
-function askAboutRepo(repo: Repo, teamName?: string): string {
+function askAboutRepo(repo: Repo, teamName?: string, visited = false): string {
   const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : ' (no remote)';
   const set = (kind: string) => `call the Skill tool: skill «standup-agent:standup», args «repos set ${sq(`${repo.path}=${kind}`)}»`;
-  return `[Standup Agent] The user is working in the repo ${repo.name}${where} for the first time since joining the team${teamName ? ` «${teamName}»` : ''}. This question is asked once. Ask it in the user's language: the quoted texts below are English templates.
+  const what = visited
+    ? `In an earlier Claude Code session the user also worked in the repo ${repo.name}${where} (${repo.path}), which isn't marked yet`
+    : `The user is working in the repo ${repo.name}${where} for the first time since joining the team${teamName ? ` «${teamName}»` : ''}`;
+  return `[Standup Agent] ${what}. This question is asked once. Ask it in the user's language: the quoted texts below are English templates.
 
 Before doing the user's first request, call AskUserQuestion: question «Include ${repo.name} in your standup?», header «Standup», two options:
 - «Yes, it’s work» — description: work in this repo goes into your standup draft (your manager only sees what you confirm);

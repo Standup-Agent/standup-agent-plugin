@@ -5,8 +5,7 @@ import { buildSync } from 'esbuild';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { repoRoot } from '../src/capture/git.js';
 import { projectDirName } from '../src/hooks/session-start.js';
-import { rawPath } from '../src/store.js';
-import { commit, git, makeRepo, tmp, tx, writeTranscript } from './helpers.js';
+import { commit, git, makeRepo, rawFile, tmp, tx, writeTranscript } from './helpers.js';
 
 // The real hooks, bundled the same way as plugin/dist/cli.js, run as child processes.
 let cli: string;
@@ -25,13 +24,15 @@ beforeAll(() => {
 
 const T = (m: number) => `2026-09-30T10:${String(m).padStart(2, '0')}:00.000Z`;
 
-async function waitFor(path: string, ms = 10_000): Promise<boolean> {
+/** Waits for a session's raw file on a branch; returns its path or ''. */
+async function waitForRaw(root: string, branch: string, sid: string, ms = 10_000): Promise<string> {
   const end = Date.now() + ms;
   while (Date.now() < end) {
-    if (existsSync(path)) return true;
+    const f = rawFile(root, branch, sid);
+    if (f) return f;
     await new Promise((r) => setTimeout(r, 50));
   }
-  return false;
+  return '';
 }
 
 function setup() {
@@ -67,8 +68,8 @@ describe('hooks end to end', () => {
     expect(r.stdout).toBe('');
     expect(r.ms).toBeLessThan(1000); // SessionEnd budget is ~1.5 s
     process.env.CLAUDE_PLUGIN_DATA = s.data;
-    const file = rawPath(s.root, 'feature/PAY-42-webhooks', sid);
-    expect(await waitFor(file)).toBe(true);
+    const file = await waitForRaw(s.root, 'feature/PAY-42-webhooks', sid);
+    expect(file).not.toBe('');
     expect(JSON.parse(readFileSync(file, 'utf8')).messages).toHaveLength(2);
   });
 
@@ -88,8 +89,8 @@ describe('hooks end to end', () => {
     // The hook may also announce the standup (the repo has fresh commits); whatever it prints is hook JSON.
     if (r.stdout !== '') expect(JSON.parse(r.stdout)).toBeTypeOf('object');
     process.env.CLAUDE_PLUGIN_DATA = s.data;
-    const file = rawPath(s.root, 'feature/PAY-42-webhooks', killed);
-    expect(await waitFor(file)).toBe(true);
+    const file = await waitForRaw(s.root, 'feature/PAY-42-webhooks', killed);
+    expect(file).not.toBe('');
     expect(JSON.parse(readFileSync(file, 'utf8')).reason).toBe('recover');
 
     // Captured now: the next SessionStart does not pick it up again.

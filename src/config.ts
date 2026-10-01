@@ -2,8 +2,11 @@
 export const DEFAULTS = {
   /** Raw session capture is kept locally this long, then deleted. */
   rawTtlDays: 30,
-  /** Soft cap on text taken from one session transcript. */
-  rawMaxBytesPerSession: 64 * 1024,
+  /**
+   * Soft cap on text kept from one session for one repo, branch and day (a capture segment).
+   * Over it, the conversation is thinned turn by turn (capture/budget.ts), not cut in the middle.
+   */
+  rawMaxBytesPerSegment: 64 * 1024,
   /** Standup is not shown before this local hour. */
   showNotBeforeHour: 6,
   /** "Not now" postpones the standup for this long. */
@@ -23,6 +26,10 @@ export const DEFAULTS = {
 export const CAPTURE = {
   /** One message longer than this is cut; keeps a pasted log from eating the session budget. */
   maxBytesPerMessage: 8 * 1024,
+  /** One Claude Code compaction summary is cut to this. */
+  maxBytesPerSummary: 6 * 1024,
+  /** Unmarked repos a session visited: at most this many sessions remembered per repo for a later capture. */
+  maxUnmarkedSessionsPerRepo: 50,
   /** SessionStart recovery only looks at transcripts modified within this window. */
   recoverLookbackDays: 7,
   /** At most this many missed sessions are handed to one recovery worker. */

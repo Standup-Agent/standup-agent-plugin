@@ -8,7 +8,7 @@ import { paths } from './paths.js';
 
 /**
  * Local digest store:
- *   digests/<repo>/<branch>/raw/<session_id>.json   raw capture of one session on one branch
+ *   digests/<repo>/<branch>/raw/<session_id>_<day>.json   one session on one branch on one local day
  *   digests/<repo>/<branch>/digest.md               synthesized digest (task 2)
  * Raw files live DEFAULTS.rawTtlDays counted from the session's last activity; expired ones are
  * removed on every write.
@@ -19,13 +19,17 @@ export interface RawCapture {
   session_id: string;
   repo: { path: string; name: string };
   branch: string;
+  /** Local day (YYYY-MM-DD) of the messages: a session that runs for days is split by day. */
+  segment?: string;
   captured_at: string;
   /** Session activity on this branch (first/last transcript entry). */
   period: { from: string; to: string };
   cc_version?: string;
   reason?: string;
   messages: { role: 'user' | 'assistant'; ts?: string; text: string }[];
-  /** Messages dropped / cut to fit DEFAULTS.rawMaxBytesPerSession. */
+  /** Claude Code's compaction summaries made in this segment (the session only visited work repos). */
+  compact_summaries?: { ts?: string; text: string }[];
+  /** Messages dropped / cut to fit DEFAULTS.rawMaxBytesPerSegment. */
   truncated: { dropped: number; cut: number };
   commits: { sha: string; ts: string; message: string }[];
   files: string[];
@@ -52,8 +56,44 @@ export function branchKey(branch: string): string {
 const safeName = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
 const safeFile = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '_');
 
-export function rawPath(repoPath: string, branch: string, sessionId: string): string {
-  return join(paths.digests(), repoKey(repoPath), branchKey(branch), 'raw', `${safeFile(sessionId)}.json`);
+export function rawPath(repoPath: string, branch: string, sessionId: string, segment?: string): string {
+  const name = segment ? `${safeFile(sessionId)}_${safeFile(segment)}` : safeFile(sessionId);
+  return join(paths.digests(), repoKey(repoPath), branchKey(branch), 'raw', `${name}.json`);
+}
+
+/**
+ * Remove every raw file of a session (any repo, branch, day) before it is captured again: a new
+ * capture rewrites the whole session, so a repo marked personal meanwhile loses its old files.
+ */
+export function removeSessionRaw(sessionId: string): number {
+  const prefix = safeFile(sessionId);
+  let removed = 0;
+  for (const repo of listDirs(paths.digests())) {
+    for (const branch of listDirs(join(paths.digests(), repo))) {
+      const rawDir = join(paths.digests(), repo, branch, 'raw');
+      let files: string[];
+      try {
+        files = readdirSync(rawDir);
+      } catch {
+        continue;
+      }
+      for (const f of files) {
+        if (f === `${prefix}.json` || (f.startsWith(`${prefix}_`) && f.endsWith('.json'))) {
+          rmSync(join(rawDir, f), { force: true });
+          removed++;
+        }
+      }
+    }
+  }
+  return removed;
+}
+
+function listDirs(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
+  }
 }
 
 /** The branch digest (standup prompt, step A): the developer's private running summary of a branch. */
@@ -79,7 +119,7 @@ export function writeDigest(repoId: string, branch: string, text: string): void 
 
 /** Atomic write; file mtime is set to the session's last activity so TTL counts from the session. */
 export function writeRaw(capture: RawCapture, now = new Date()): string {
-  const file = rawPath(capture.repo.path, capture.branch, capture.session_id);
+  const file = rawPath(capture.repo.path, capture.branch, capture.session_id, capture.segment);
   writeFileAtomic(file, JSON.stringify(capture, null, 2) + '\n');
   const last = new Date(capture.period.to);
   if (!Number.isNaN(last.getTime())) utimesSync(file, now, last);
