@@ -27,7 +27,7 @@ src/
   cli.ts                 # точка входа: session-start | session-end | capture | repos
   commands/repos.ts      # repos scan | set <path>=work|personal | list — вызывает Claude через Bash, печатает JSON
   standup/schedule.ts    # когда показывать: ≥ 6:00, не отправлен/пропущен сегодня, не отложен, не показывается в другом терминале
-  standup/materials.ts   # материалы для синтеза: сырьё после last_checkin + коммиты вне сессий, части по 25 000 символов
+  standup/materials.ts   # материалы для синтеза: сырьё после last_checkin + коммиты вне сессий, части до 24 КБ (байты UTF-8: лимит вывода Bash ~30 КБ)
   standup/commands.ts    # standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker
   api.ts                 # очередь queue/ → POST /reports, /events; ретрай при следующем старте (`cli.js flush`)
   prompt.ts              # промпт синтеза с сервера / запасной

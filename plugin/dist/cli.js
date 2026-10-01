@@ -1272,7 +1272,7 @@ function readCache() {
 var import_node_child_process4 = require("node:child_process");
 var import_node_fs13 = require("node:fs");
 var import_node_path15 = require("node:path");
-var PART_CHARS = 25e3;
+var PART_BYTES = 24e3;
 function rawFilesSince(fromMs) {
   const out = [];
   for (const repo of dirs(paths.digests())) {
@@ -1405,13 +1405,20 @@ function sessionLines(c, budget) {
 function split(lines) {
   const parts = [];
   let cur = "";
+  let curBytes = 0;
   for (let l of lines) {
-    if (l.length > PART_CHARS) l = l.slice(0, PART_CHARS - 20) + " \u2026[\u043E\u0431\u0440\u0435\u0437\u0430\u043D\u043E]";
-    if (cur.length + l.length + 1 > PART_CHARS) {
+    let size = Buffer.byteLength(l, "utf8");
+    if (size > PART_BYTES) {
+      l = cutBytes(l, PART_BYTES - 40).text;
+      size = Buffer.byteLength(l, "utf8");
+    }
+    if (curBytes + size + 1 > PART_BYTES) {
       parts.push(cur);
       cur = "";
+      curBytes = 0;
     }
     cur += l + "\n";
+    curBytes += size + 1;
   }
   if (cur) parts.push(cur);
   return parts;

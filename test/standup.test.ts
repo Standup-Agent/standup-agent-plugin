@@ -144,15 +144,17 @@ describe('standup commands', () => {
   it('prepare splits big materials into parts that fit the Bash output limit', async () => {
     const repo = makeRepo();
     state({ repos: { [repo]: 'work' }, last_checkin: at(8, 29).toISOString() });
-    for (let i = 0; i < 6; i++) capture(repo, `b${i}`, at(10 + i, 29), { messages: [{ role: 'user', text: 'задача ' + 'x'.repeat(20_000) }, { role: 'assistant', text: 'итог' }] });
+    for (let i = 0; i < 6; i++) capture(repo, `b${i}`, at(10 + i, 29), { messages: [{ role: 'user', text: 'задача ' + 'ж'.repeat(20_000) }, { role: 'assistant', text: 'итог' }] });
     const p1 = await standupCommand(['prepare'], ROOT, at(9));
     const m = /\[Часть 1 из (\d+)/.exec(p1.out);
     expect(Number(m?.[1])).toBeGreaterThan(1);
     const n = Number(m![1]);
+    // Cyrillic is 2 bytes a char: the limit that matters is bytes (30 KB), with room for the part header.
+    expect(Buffer.byteLength(p1.out as string, 'utf8')).toBeLessThanOrEqual(24_200);
     for (let i = 2; i <= n; i++) {
       const pi = await standupCommand(['prepare', '--part', String(i)], ROOT, at(9));
       expect(pi.code).toBe(0);
-      expect(pi.out.length).toBeLessThanOrEqual(25_100);
+      expect(Buffer.byteLength(pi.out as string, 'utf8')).toBeLessThanOrEqual(24_200);
     }
     expect((await standupCommand(['prepare', '--part', String(n + 1)], ROOT, at(9))).code).toBe(1);
   });

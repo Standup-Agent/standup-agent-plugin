@@ -9,10 +9,14 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { CAPTURE, DEFAULTS } from '../config.js';
 import { paths } from '../paths.js';
+import { cutBytes } from '../capture/transcript.js';
 import { readDigest, repoKey, type RawCapture } from '../store.js';
 
-/** Default Bash tool output limit is 30 000 chars; keep a margin for the part header. */
-export const PART_CHARS = 25_000;
+/**
+ * Bash tool output above ~30 KB is saved to a file instead of shown (seen live on Cyrillic text at
+ * 33 KB / 25k chars), and the subagent then wanders off with cat/sed. Budget parts in UTF-8 bytes.
+ */
+export const PART_BYTES = 24_000;
 
 export interface Materials {
   from: string;
@@ -106,7 +110,7 @@ export function devLanguage(captures: RawCapture[]): string {
 
 /**
  * Render to text in the shape the standup prompt describes (period, dev_language, per repo/branch
- * existing_digest + raw entries, commits_outside_sessions) and split into parts of at most PART_CHARS.
+ * existing_digest + raw entries, commits_outside_sessions) and split into parts of at most PART_BYTES.
  * Every branch carries its repo_id: the synthesis subagent saves digests under it.
  */
 export function render(m: Materials, prompt: { version: string; text: string }, maxChars: number = DEFAULTS.synthMaxChars): string[] {
@@ -179,13 +183,20 @@ function sessionLines(c: RawCapture, budget: number): string[] {
 function split(lines: string[]): string[] {
   const parts: string[] = [];
   let cur = '';
+  let curBytes = 0;
   for (let l of lines) {
-    if (l.length > PART_CHARS) l = l.slice(0, PART_CHARS - 20) + ' …[обрезано]';
-    if (cur.length + l.length + 1 > PART_CHARS) {
+    let size = Buffer.byteLength(l, 'utf8');
+    if (size > PART_BYTES) {
+      l = cutBytes(l, PART_BYTES - 40).text;
+      size = Buffer.byteLength(l, 'utf8');
+    }
+    if (curBytes + size + 1 > PART_BYTES) {
       parts.push(cur);
       cur = '';
+      curBytes = 0;
     }
     cur += l + '\n';
+    curBytes += size + 1;
   }
   if (cur) parts.push(cur);
   return parts;
