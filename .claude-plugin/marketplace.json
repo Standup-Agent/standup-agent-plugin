@@ -1,6 +1,11 @@
 {
   "name": "standup-agent",
-  "owner": { "name": "Standup Agent" },
+  "owner": {
+    "name": "Standup Agent"
+  },
+  "metadata": {
+    "description": "Standup Agent: командный стендап из работы в Claude Code"
+  },
   "plugins": [
     {
       "name": "standup-agent",
