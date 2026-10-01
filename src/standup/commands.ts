@@ -14,6 +14,7 @@ import { standupPrompt } from '../prompt.js';
 import { readState, updateState, workRepos } from '../state.js';
 import { collect, render } from './materials.js';
 import { localDate, periodFrom } from './schedule.js';
+import { REPO_ID_RE, writeDigest } from '../store.js';
 
 const H = 3_600_000;
 const partsFile = () => join(dataDir(), 'standup-materials.json');
@@ -27,6 +28,8 @@ export async function standupCommand(args: string[], pluginRoot: string, now = n
       return send(rest.join(' '), now);
     case 'snooze':
       return snooze(now);
+    case 'save-digests':
+      return saveDigests(rest.join(' '));
     case 'event': {
       const type = rest[0] as EventType;
       if (!['edited', 'blocker'].includes(type)) return { code: 1, out: 'usage: standup event edited|blocker' };
@@ -34,7 +37,7 @@ export async function standupCommand(args: string[], pluginRoot: string, now = n
       return { code: 0, out: 'ok' };
     }
     default:
-      return { code: 1, out: "usage: standup prepare [--part N] | send '<json>' | snooze | event edited|blocker" };
+      return { code: 1, out: "usage: standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker" };
   }
 }
 
@@ -143,4 +146,31 @@ function snooze(now: Date): { code: number; out: string } {
   return skipped
     ? { code: 0, out: 'Пропускаем сегодня. Работа за сегодня войдёт в завтрашний стендап.' }
     : { code: 0, out: `Хорошо, напомню не раньше чем через ${DEFAULTS.snoozeHours} ч.` };
+}
+
+/** Step A of the standup prompt: the subagent saves updated branch digests (they never leave the machine). */
+function saveDigests(json: string): { code: number; out: string } {
+  let list: unknown;
+  try {
+    list = JSON.parse(json);
+  } catch {
+    return { code: 1, out: 'Аргумент — JSON-массив [{repo, branch, digest}] в одинарных кавычках (апостроф внутри замени на ’).' };
+  }
+  if (!Array.isArray(list)) return { code: 1, out: 'нужен массив [{repo, branch, digest}]' };
+  let saved = 0;
+  const skipped: string[] = [];
+  for (const raw of list) {
+    const d = (raw ?? {}) as Record<string, unknown>;
+    const repo = str(d.repo);
+    const branch = str(d.branch);
+    const digest = str(d.digest);
+    if (!repo || !branch || !digest || !REPO_ID_RE.test(repo)) {
+      skipped.push(String(d.repo ?? '?'));
+      continue;
+    }
+    writeDigest(repo, branch, digest);
+    saved++;
+  }
+  log('info', 'standup: digests saved', { saved, skipped: skipped.length });
+  return { code: skipped.length && !saved ? 1 : 0, out: `Сохранено дайджестов: ${saved}${skipped.length ? `; пропущено (repo должен быть repo_id из материалов): ${skipped.join(', ')}` : ''}` };
 }

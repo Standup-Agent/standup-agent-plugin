@@ -20,7 +20,7 @@ plugin/                          # ← только это ставится по
   skills/join/SKILL.md           # (задача 4) узнаёт ссылку standupagent.ai/join/<CODE>
   skills/standup/SKILL.md        # /standup: показ стендапа (4 кнопки), разметка репо (repos, repos scan)
   skills/synth/SKILL.md          # context: fork + background: false → субагент standup-synth синхронно
-  agents/standup-synth.md        # субагент синтеза: берёт материалы из `standup prepare`, возвращает только стендап
+  agents/standup-synth.md        # субагент синтеза: материалы из `standup prepare`, шаг A → `standup save-digests`, возвращает только стендап + blocker_hint
   prompts/standup.fallback.md    # запасная копия промпта синтеза (основной — GET /prompts/standup, кэш на день)
   dist/cli.js                    # собранный бандл, коммитится
 src/
@@ -28,7 +28,7 @@ src/
   commands/repos.ts      # repos scan | set <path>=work|personal | list — вызывает Claude через Bash, печатает JSON
   standup/schedule.ts    # когда показывать: ≥ 6:00, не отправлен/пропущен сегодня, не отложен, не показывается в другом терминале
   standup/materials.ts   # материалы для синтеза: сырьё после last_checkin + коммиты вне сессий, части по 25 000 символов
-  standup/commands.ts    # standup prepare [--part N] | send '<json>' | snooze | event edited|blocker
+  standup/commands.ts    # standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker
   api.ts                 # очередь queue/ → POST /reports, /events; ретрай при следующем старте (`cli.js flush`)
   prompt.ts              # промпт синтеза с сервера / запасной
   hookio.ts              # чтение и разбор stdin хука
@@ -54,7 +54,7 @@ state.json                         # last_checkin, shown_at/lock, snooze_until, 
 auth.json                          # member_token (не логировать)
 digests/<repo>/<branch>/raw/*.json # сырьё сессий, TTL 30 дней от последней активности (mtime файла)
                                    # <repo> = имя-<8 hex sha256 пути>, <branch> = encodeURIComponent(ветка)
-digests/<repo>/<branch>/digest.md  # синтезированный дайджест ветки, дополняется
+digests/<repo>/<branch>/digest.md  # приватный дайджест ветки (шаг A промпта: Goal/Done/Why/State/Left), переписывается синтезом, не уходит наружу
 queue/*.json                       # неотправленные репорты (ретрай, идемпотентность по report.id)
 prompt-cache.json                  # {version, text, fetched_at}, кэш на день
 ```
@@ -69,7 +69,8 @@ prompt-cache.json                  # {version, text, fetched_at}, кэш на д
 - Из транскрипта берём только тексты пользователя и Claude, без вывода инструментов и диффов. Лимит — десятки КБ на сессию.
 - Из `~/.claude.json` читаем только `oauthAccount.displayName` и `emailAddress`. Файл содержит токены: не логировать, не копировать. Если полей нет, берём `git config user.name/email`.
 - **Разрешения (проверено 30.09.2026, режим default).** CLI, который Claude запускает через Bash, не получает `CLAUDE_PLUGIN_DATA` из окружения — путь передаётся аргументом `--data ${CLAUDE_PLUGIN_DATA}`. Без запроса разрешения команды идут только по правилу `allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js *)` из скилла, поэтому команда пишется **ровно** `node <root>/dist/cli.js --data <data> …` без кавычек и префиксов. Правило живёт до следующего хода: ответ на AskUserQuestion — тот же ход, а новое сообщение пользователя или завершение фонового субагента — новый, и тогда скилл надо вызвать заново (`continue`). `Read` файлов из папки данных всегда спрашивает разрешение — материалы отдаются через вывод Bash. Субагент через Agent уходит в фон и ломает ход — синтез идёт через скилл с `context: fork` + `background: false`. Разовые запросы «Use skill?» при первом авто-вызове каждого скилла остаются.
-- Результат forked-скилла пользователь не видит: текст стендапа кладётся прямо в `question` AskUserQuestion.
+- Результат forked-скилла пользователь не видит: текст стендапа кладётся прямо в `question` AskUserQuestion, `blocker_hint` — строкой «💡 …» под ним, не в текст и не в `blockers`.
+- Промпт синтеза — Алексея (`standup-v1`, на сервере `GET /prompts/standup`, копия в `plugin/prompts/standup.fallback.md`). Его текст не правим: служебное (repo_id, язык) передаётся через материалы и инструкцию субагента.
 - Неразмеченный репо не захватывается. Директории без git пропускаем. Ключ разметки в `state.repos` — вывод `git rev-parse --show-toplevel`; worktree засчитывается по основному checkout.
 - Страховка на SessionStart только читает каталоги и `stat`, содержимое транскриптов не открывает; найденное отдаёт отсоединённому воркеру `capture '<json-массив jobs>'`.
 

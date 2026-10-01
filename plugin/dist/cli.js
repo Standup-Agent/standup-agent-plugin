@@ -376,6 +376,21 @@ var safeFile = (s) => s.replace(/[^A-Za-z0-9_-]/g, "_");
 function rawPath(repoPath, branch, sessionId) {
   return (0, import_node_path5.join)(paths.digests(), repoKey(repoPath), branchKey(branch), "raw", `${safeFile(sessionId)}.json`);
 }
+function digestPath(repoId, branch) {
+  return (0, import_node_path5.join)(paths.digests(), repoId, branchKey(branch), "digest.md");
+}
+function readDigest(repoId, branch) {
+  try {
+    return (0, import_node_fs4.readFileSync)(digestPath(repoId, branch), "utf8");
+  } catch {
+    return "";
+  }
+}
+var REPO_ID_RE = /^[A-Za-z0-9._-]+-[0-9a-f]{8}$/;
+function writeDigest(repoId, branch, text) {
+  if (!REPO_ID_RE.test(repoId) || repoId.startsWith(".")) throw new Error(`bad repo id: ${repoId}`);
+  writeFileAtomic(digestPath(repoId, branch), text.trim() + "\n");
+}
 function writeRaw(capture, now = /* @__PURE__ */ new Date()) {
   const file = rawPath(capture.repo.path, capture.branch, capture.session_id);
   writeFileAtomic(file, JSON.stringify(capture, null, 2) + "\n");
@@ -1305,7 +1320,7 @@ function outsideCommits(repos, from, known, limitPerRepo = CAPTURE.maxCommitsPer
     for (const rec of (log2 ?? "").split("")) {
       const [sha, ref, ts, subject] = rec.trim().split("");
       if (!sha || !ts || known.has(sha)) continue;
-      out.push({ repo: (0, import_node_path15.basename)(repo), branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
+      out.push({ repo: (0, import_node_path15.basename)(repo), repoPath: repo, branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
       if (++n >= limitPerRepo) break;
     }
   }
@@ -1316,53 +1331,58 @@ function collect(from, to, workRepos2) {
   const known = new Set(captures.flatMap((c) => c.commits.map((k) => k.sha)));
   return { from: from.toISOString(), to: to.toISOString(), captures, outside: outsideCommits(workRepos2, from, known) };
 }
+function devLanguage(captures) {
+  let cyr = 0;
+  let lat = 0;
+  for (const c of captures)
+    for (const m of c.messages)
+      if (m.role === "user") {
+        cyr += (m.text.match(/[А-Яа-яЁё]/g) ?? []).length;
+        lat += (m.text.match(/[A-Za-z]/g) ?? []).length;
+      }
+  return cyr > lat * 0.5 ? "Russian" : "English";
+}
 function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
-  const head = [
-    `# \u041C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B \u0434\u043B\u044F \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430`,
-    `\u041F\u0435\u0440\u0438\u043E\u0434: ${m.from} \u2014 ${m.to} (\u0441 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u043D\u043E\u0433\u043E \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430)`,
-    "",
-    `## \u041A\u0430\u043A \u043F\u0438\u0441\u0430\u0442\u044C \u0441\u0442\u0435\u043D\u0434\u0430\u043F (prompt_version: ${prompt.version})`,
-    prompt.text.trim(),
-    ""
-  ];
+  const head = [`# Prompt (prompt_version: ${prompt.version})`, prompt.text.trim(), "", "# Input", `period: {from: ${m.from}, to: ${m.to}}`, `dev_language: ${devLanguage(m.captures)}`, ""];
   const body = [];
   const perSession = Math.max(2e3, Math.floor(maxChars / Math.max(1, m.captures.length)));
-  const byRepo = /* @__PURE__ */ new Map();
-  for (const c of m.captures) {
-    const list2 = byRepo.get(c.repo.name) ?? [];
-    list2.push(c);
-    byRepo.set(c.repo.name, list2);
-  }
-  for (const [repo, caps] of byRepo) {
-    body.push(`## \u0420\u0435\u043F\u043E ${repo}`);
-    const byBranch = /* @__PURE__ */ new Map();
-    for (const c of caps) byBranch.set(c.branch, [...byBranch.get(c.branch) ?? [], c]);
-    for (const [branch, list2] of byBranch) {
-      const tickets = [...new Set(list2.flatMap((c) => c.tickets))];
-      body.push(`### \u0412\u0435\u0442\u043A\u0430 ${branch}${tickets.length ? ` \xB7 \u0442\u0438\u043A\u0435\u0442\u044B: ${tickets.join(", ")}` : ""}`);
-      const commits = list2.flatMap((c) => c.commits);
-      if (commits.length) {
-        body.push("\u041A\u043E\u043C\u043C\u0438\u0442\u044B:");
-        for (const k of commits) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message.split("\n")[0]}`);
-      }
-      const files2 = [...new Set(list2.flatMap((c) => c.files))];
-      if (files2.length) body.push(`\u0424\u0430\u0439\u043B\u044B: ${files2.slice(0, 30).join(", ")}${files2.length > 30 ? ` \u0438 \u0435\u0449\u0451 ${files2.length - 30}` : ""}`);
-      for (const c of list2) {
-        body.push(`\u0421\u0435\u0441\u0441\u0438\u044F ${c.period.from.slice(0, 16)} \u2014 ${c.period.to.slice(11, 16)}:`);
-        body.push(...sessionLines(c, perSession));
-      }
-      body.push("");
+  const branches = /* @__PURE__ */ new Map();
+  const get = (repo, repoPath, branch) => {
+    const repoId = repoKey(repoPath);
+    const k = `${repoId}\0${branch}`;
+    let b = branches.get(k);
+    if (!b) branches.set(k, b = { repo, repoId, branch, caps: [], outside: [] });
+    return b;
+  };
+  for (const c of m.captures) get(c.repo.name, c.repo.path, c.branch).caps.push(c);
+  for (const k of m.outside) get(k.repo, k.repoPath, k.branch || "HEAD").outside.push(k);
+  for (const b of branches.values()) {
+    const tickets = [...new Set(b.caps.flatMap((c) => c.tickets))];
+    body.push(`## repo: ${b.repo} \xB7 repo_id: ${b.repoId} \xB7 branch: ${b.branch}${tickets.length ? ` \xB7 ticket: ${tickets.join(", ")}` : ""}`);
+    const digest = readDigest(b.repoId, b.branch).trim();
+    body.push("existing_digest:", digest || "(empty)", "", "raw entries:");
+    const commits = b.caps.flatMap((c) => c.commits);
+    if (commits.length) {
+      body.push("commits:");
+      for (const k of commits) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message.split("\n")[0]}`);
     }
-  }
-  if (m.outside.length) {
-    body.push("## \u041A\u043E\u043C\u043C\u0438\u0442\u044B \u0432\u043D\u0435 \u0441\u0435\u0441\u0441\u0438\u0439 Claude Code");
-    for (const k of m.outside) body.push(`- ${k.repo} / ${k.branch} ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message}`);
+    const files2 = [...new Set(b.caps.flatMap((c) => c.files))];
+    if (files2.length) body.push(`changed files: ${files2.slice(0, 30).join(", ")}${files2.length > 30 ? ` (+${files2.length - 30})` : ""}`);
+    for (const c of b.caps) {
+      body.push(`session ${c.period.from.slice(0, 16)} \u2014 ${c.period.to.slice(11, 16)}:`);
+      body.push(...sessionLines(c, perSession));
+    }
+    if (b.outside.length) {
+      body.push("commits_outside_sessions:");
+      for (const k of b.outside) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message}`);
+    }
+    body.push("");
   }
   if (body.length === 0) body.push("\u0420\u0430\u0431\u043E\u0442\u044B \u0441 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E.");
   return split([...head, ...body]);
 }
 function sessionLines(c, budget) {
-  const line = (m) => `${m.role === "user" ? "> \u0420\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u0447\u0438\u043A" : "< Claude"}: ${m.text.replace(/\n{3,}/g, "\n\n")}`;
+  const line = (m) => `${m.role === "user" ? "> developer" : "< claude"}: ${m.text.replace(/\n{3,}/g, "\n\n")}`;
   const lines = c.messages.map(line);
   const total = lines.reduce((n, l) => n + l.length, 0);
   if (total <= budget) return lines;
@@ -1378,7 +1398,7 @@ function sessionLines(c, budget) {
   const out = [];
   lines.forEach((l, i) => {
     if (keep.has(i)) out.push(l);
-    else if (out[out.length - 1] !== "\u2026 (\u0447\u0430\u0441\u0442\u044C \u043F\u0435\u0440\u0435\u043F\u0438\u0441\u043A\u0438 \u043E\u043F\u0443\u0449\u0435\u043D\u0430)") out.push("\u2026 (\u0447\u0430\u0441\u0442\u044C \u043F\u0435\u0440\u0435\u043F\u0438\u0441\u043A\u0438 \u043E\u043F\u0443\u0449\u0435\u043D\u0430)");
+    else if (out[out.length - 1] !== "\u2026 (part of the conversation omitted)") out.push("\u2026 (part of the conversation omitted)");
   });
   return out;
 }
@@ -1454,6 +1474,8 @@ async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date()
       return send(rest.join(" "), now);
     case "snooze":
       return snooze(now);
+    case "save-digests":
+      return saveDigests(rest.join(" "));
     case "event": {
       const type = rest[0];
       if (!["edited", "blocker"].includes(type)) return { code: 1, out: "usage: standup event edited|blocker" };
@@ -1461,7 +1483,7 @@ async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date()
       return { code: 0, out: "ok" };
     }
     default:
-      return { code: 1, out: "usage: standup prepare [--part N] | send '<json>' | snooze | event edited|blocker" };
+      return { code: 1, out: "usage: standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker" };
   }
 }
 async function prepare(args, pluginRoot, now) {
@@ -1546,6 +1568,31 @@ function snooze(now) {
   });
   enqueueEvent(skipped ? "skipped" : "snoozed", now);
   return skipped ? { code: 0, out: "\u041F\u0440\u043E\u043F\u0443\u0441\u043A\u0430\u0435\u043C \u0441\u0435\u0433\u043E\u0434\u043D\u044F. \u0420\u0430\u0431\u043E\u0442\u0430 \u0437\u0430 \u0441\u0435\u0433\u043E\u0434\u043D\u044F \u0432\u043E\u0439\u0434\u0451\u0442 \u0432 \u0437\u0430\u0432\u0442\u0440\u0430\u0448\u043D\u0438\u0439 \u0441\u0442\u0435\u043D\u0434\u0430\u043F." } : { code: 0, out: `\u0425\u043E\u0440\u043E\u0448\u043E, \u043D\u0430\u043F\u043E\u043C\u043D\u044E \u043D\u0435 \u0440\u0430\u043D\u044C\u0448\u0435 \u0447\u0435\u043C \u0447\u0435\u0440\u0435\u0437 ${DEFAULTS.snoozeHours} \u0447.` };
+}
+function saveDigests(json) {
+  let list2;
+  try {
+    list2 = JSON.parse(json);
+  } catch {
+    return { code: 1, out: "\u0410\u0440\u0433\u0443\u043C\u0435\u043D\u0442 \u2014 JSON-\u043C\u0430\u0441\u0441\u0438\u0432 [{repo, branch, digest}] \u0432 \u043E\u0434\u0438\u043D\u0430\u0440\u043D\u044B\u0445 \u043A\u0430\u0432\u044B\u0447\u043A\u0430\u0445 (\u0430\u043F\u043E\u0441\u0442\u0440\u043E\u0444 \u0432\u043D\u0443\u0442\u0440\u0438 \u0437\u0430\u043C\u0435\u043D\u0438 \u043D\u0430 \u2019)." };
+  }
+  if (!Array.isArray(list2)) return { code: 1, out: "\u043D\u0443\u0436\u0435\u043D \u043C\u0430\u0441\u0441\u0438\u0432 [{repo, branch, digest}]" };
+  let saved = 0;
+  const skipped = [];
+  for (const raw of list2) {
+    const d = raw ?? {};
+    const repo = str2(d.repo);
+    const branch = str2(d.branch);
+    const digest = str2(d.digest);
+    if (!repo || !branch || !digest || !REPO_ID_RE.test(repo)) {
+      skipped.push(String(d.repo ?? "?"));
+      continue;
+    }
+    writeDigest(repo, branch, digest);
+    saved++;
+  }
+  log("info", "standup: digests saved", { saved, skipped: skipped.length });
+  return { code: skipped.length && !saved ? 1 : 0, out: `\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E \u0434\u0430\u0439\u0434\u0436\u0435\u0441\u0442\u043E\u0432: ${saved}${skipped.length ? `; \u043F\u0440\u043E\u043F\u0443\u0449\u0435\u043D\u043E (repo \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C repo_id \u0438\u0437 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u043E\u0432): ${skipped.join(", ")}` : ""}` };
 }
 
 // src/hookio.ts

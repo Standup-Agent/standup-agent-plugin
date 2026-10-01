@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readdirSync, rmdirSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { readdirSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { DEFAULTS } from './config.js';
 import { writeFileAtomic } from './fsutil.js';
@@ -54,6 +54,27 @@ const safeFile = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '_');
 
 export function rawPath(repoPath: string, branch: string, sessionId: string): string {
   return join(paths.digests(), repoKey(repoPath), branchKey(branch), 'raw', `${safeFile(sessionId)}.json`);
+}
+
+/** The branch digest (standup prompt, step A): the developer's private running summary of a branch. */
+export function digestPath(repoId: string, branch: string): string {
+  return join(paths.digests(), repoId, branchKey(branch), 'digest.md');
+}
+
+export function readDigest(repoId: string, branch: string): string {
+  try {
+    return readFileSync(digestPath(repoId, branch), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+/** repo ids are `repoKey()` values; anything else could point outside the store. */
+export const REPO_ID_RE = /^[A-Za-z0-9._-]+-[0-9a-f]{8}$/;
+
+export function writeDigest(repoId: string, branch: string, text: string): void {
+  if (!REPO_ID_RE.test(repoId) || repoId.startsWith('.')) throw new Error(`bad repo id: ${repoId}`);
+  writeFileAtomic(digestPath(repoId, branch), text.trim() + '\n');
 }
 
 /** Atomic write; file mtime is set to the session's last activity so TTL counts from the session. */

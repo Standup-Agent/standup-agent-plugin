@@ -9,7 +9,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { CAPTURE, DEFAULTS } from '../config.js';
 import { paths } from '../paths.js';
-import type { RawCapture } from '../store.js';
+import { readDigest, repoKey, type RawCapture } from '../store.js';
 
 /** Default Bash tool output limit is 30 000 chars; keep a margin for the part header. */
 export const PART_CHARS = 25_000;
@@ -23,6 +23,7 @@ export interface Materials {
 
 export interface OutsideCommit {
   repo: string;
+  repoPath: string;
   branch: string;
   sha: string;
   ts: string;
@@ -77,7 +78,7 @@ export function outsideCommits(repos: string[], from: Date, known: Set<string>, 
     for (const rec of (log ?? '').split('\x1e')) {
       const [sha, ref, ts, subject] = rec.trim().split('\x1f');
       if (!sha || !ts || known.has(sha)) continue;
-      out.push({ repo: basename(repo), branch: (ref ?? '').replace(/^refs\/heads\//, ''), sha, ts, message: subject ?? '' });
+      out.push({ repo: basename(repo), repoPath: repo, branch: (ref ?? '').replace(/^refs\/heads\//, ''), sha, ts, message: subject ?? '' });
       if (++n >= limitPerRepo) break;
     }
   }
@@ -90,49 +91,63 @@ export function collect(from: Date, to: Date, workRepos: string[]): Materials {
   return { from: from.toISOString(), to: to.toISOString(), captures, outside: outsideCommits(workRepos, from, known) };
 }
 
-/** Render to text and split into parts of at most PART_CHARS on line boundaries. */
+/** The language the developer writes in, for the prompt's dev_language: by letters in their messages. */
+export function devLanguage(captures: RawCapture[]): string {
+  let cyr = 0;
+  let lat = 0;
+  for (const c of captures)
+    for (const m of c.messages)
+      if (m.role === 'user') {
+        cyr += (m.text.match(/[А-Яа-яЁё]/g) ?? []).length;
+        lat += (m.text.match(/[A-Za-z]/g) ?? []).length;
+      }
+  return cyr > lat * 0.5 ? 'Russian' : 'English';
+}
+
+/**
+ * Render to text in the shape the standup prompt describes (period, dev_language, per repo/branch
+ * existing_digest + raw entries, commits_outside_sessions) and split into parts of at most PART_CHARS.
+ * Every branch carries its repo_id: the synthesis subagent saves digests under it.
+ */
 export function render(m: Materials, prompt: { version: string; text: string }, maxChars: number = DEFAULTS.synthMaxChars): string[] {
-  const head = [
-    `# Материалы для стендапа`,
-    `Период: ${m.from} — ${m.to} (с последнего отправленного стендапа)`,
-    '',
-    `## Как писать стендап (prompt_version: ${prompt.version})`,
-    prompt.text.trim(),
-    '',
-  ];
+  const head = [`# Prompt (prompt_version: ${prompt.version})`, prompt.text.trim(), '', '# Input', `period: {from: ${m.from}, to: ${m.to}}`, `dev_language: ${devLanguage(m.captures)}`, ''];
   const body: string[] = [];
   const perSession = Math.max(2_000, Math.floor(maxChars / Math.max(1, m.captures.length)));
 
-  const byRepo = new Map<string, RawCapture[]>();
-  for (const c of m.captures) {
-    const list = byRepo.get(c.repo.name) ?? [];
-    list.push(c);
-    byRepo.set(c.repo.name, list);
-  }
-  for (const [repo, caps] of byRepo) {
-    body.push(`## Репо ${repo}`);
-    const byBranch = new Map<string, RawCapture[]>();
-    for (const c of caps) byBranch.set(c.branch, [...(byBranch.get(c.branch) ?? []), c]);
-    for (const [branch, list] of byBranch) {
-      const tickets = [...new Set(list.flatMap((c) => c.tickets))];
-      body.push(`### Ветка ${branch}${tickets.length ? ` · тикеты: ${tickets.join(', ')}` : ''}`);
-      const commits = list.flatMap((c) => c.commits);
-      if (commits.length) {
-        body.push('Коммиты:');
-        for (const k of commits) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message.split('\n')[0]}`);
-      }
-      const files = [...new Set(list.flatMap((c) => c.files))];
-      if (files.length) body.push(`Файлы: ${files.slice(0, 30).join(', ')}${files.length > 30 ? ` и ещё ${files.length - 30}` : ''}`);
-      for (const c of list) {
-        body.push(`Сессия ${c.period.from.slice(0, 16)} — ${c.period.to.slice(11, 16)}:`);
-        body.push(...sessionLines(c, perSession));
-      }
-      body.push('');
+  // Branches with new entries: from captures and from commits made outside sessions.
+  type Branch = { repo: string; repoId: string; branch: string; caps: RawCapture[]; outside: OutsideCommit[] };
+  const branches = new Map<string, Branch>();
+  const get = (repo: string, repoPath: string, branch: string) => {
+    const repoId = repoKey(repoPath);
+    const k = `${repoId}\0${branch}`;
+    let b = branches.get(k);
+    if (!b) branches.set(k, (b = { repo, repoId, branch, caps: [], outside: [] }));
+    return b;
+  };
+  for (const c of m.captures) get(c.repo.name, c.repo.path, c.branch).caps.push(c);
+  for (const k of m.outside) get(k.repo, k.repoPath, k.branch || 'HEAD').outside.push(k);
+
+  for (const b of branches.values()) {
+    const tickets = [...new Set(b.caps.flatMap((c) => c.tickets))];
+    body.push(`## repo: ${b.repo} · repo_id: ${b.repoId} · branch: ${b.branch}${tickets.length ? ` · ticket: ${tickets.join(', ')}` : ''}`);
+    const digest = readDigest(b.repoId, b.branch).trim();
+    body.push('existing_digest:', digest || '(empty)', '', 'raw entries:');
+    const commits = b.caps.flatMap((c) => c.commits);
+    if (commits.length) {
+      body.push('commits:');
+      for (const k of commits) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message.split('\n')[0]}`);
     }
-  }
-  if (m.outside.length) {
-    body.push('## Коммиты вне сессий Claude Code');
-    for (const k of m.outside) body.push(`- ${k.repo} / ${k.branch} ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message}`);
+    const files = [...new Set(b.caps.flatMap((c) => c.files))];
+    if (files.length) body.push(`changed files: ${files.slice(0, 30).join(', ')}${files.length > 30 ? ` (+${files.length - 30})` : ''}`);
+    for (const c of b.caps) {
+      body.push(`session ${c.period.from.slice(0, 16)} — ${c.period.to.slice(11, 16)}:`);
+      body.push(...sessionLines(c, perSession));
+    }
+    if (b.outside.length) {
+      body.push('commits_outside_sessions:');
+      for (const k of b.outside) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message}`);
+    }
+    body.push('');
   }
   if (body.length === 0) body.push('Работы с последнего стендапа не найдено.');
   return split([...head, ...body]);
@@ -140,7 +155,7 @@ export function render(m: Materials, prompt: { version: string; text: string }, 
 
 /** First user message (the task) and the latest messages that fit: the middle goes first. */
 function sessionLines(c: RawCapture, budget: number): string[] {
-  const line = (m: RawCapture['messages'][number]) => `${m.role === 'user' ? '> Разработчик' : '< Claude'}: ${m.text.replace(/\n{3,}/g, '\n\n')}`;
+  const line = (m: RawCapture['messages'][number]) => `${m.role === 'user' ? '> developer' : '< claude'}: ${m.text.replace(/\n{3,}/g, '\n\n')}`;
   const lines = c.messages.map(line);
   const total = lines.reduce((n, l) => n + l.length, 0);
   if (total <= budget) return lines;
@@ -156,7 +171,7 @@ function sessionLines(c: RawCapture, budget: number): string[] {
   const out: string[] = [];
   lines.forEach((l, i) => {
     if (keep.has(i)) out.push(l);
-    else if (out[out.length - 1] !== '… (часть переписки опущена)') out.push('… (часть переписки опущена)');
+    else if (out[out.length - 1] !== '… (part of the conversation omitted)') out.push('… (part of the conversation omitted)');
   });
   return out;
 }

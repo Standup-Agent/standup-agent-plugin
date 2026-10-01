@@ -6,10 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { enqueueEvent, flush } from '../src/api.js';
 import { standupCheck } from '../src/hooks/session-start.js';
 import { standupCommand, buildReport } from '../src/standup/commands.js';
-import { outsideCommits, render, type Materials } from '../src/standup/materials.js';
+import { devLanguage, outsideCommits, render, type Materials } from '../src/standup/materials.js';
 import { gate, localDate, periodFrom } from '../src/standup/schedule.js';
 import { readState } from '../src/state.js';
-import { writeRaw, type RawCapture } from '../src/store.js';
+import { readDigest, repoKey, writeRaw, type RawCapture } from '../src/store.js';
 import { commit, makeRepo, tmp } from './helpers.js';
 
 const ROOT = join(__dirname, '..', 'plugin');
@@ -101,8 +101,10 @@ describe('standup commands', () => {
     capture(repo, 'feature/PAY-42', at(18, 29));
     const p = await standupCommand(['prepare'], ROOT, at(9));
     expect(p.code).toBe(0);
-    expect(p.out).toContain('Ветка feature/PAY-42 · тикеты: PAY-42');
-    expect(p.out).toContain('prompt_version: fallback-0');
+    expect(p.out).toMatch(/## repo: api · repo_id: \S+-[0-9a-f]{8} · branch: feature\/PAY-42 · ticket: PAY-42/);
+    expect(p.out).toContain('prompt_version: standup-v1');
+    expect(p.out).toContain('existing_digest:\n(empty)');
+    expect(p.out).toContain('dev_language: English');
     expect(readState().standup?.showing_until).toBeDefined();
 
     const json = JSON.stringify({ text: 'PAY-42 — webhooks\n  Сделано: verify', items: [{ ticket: 'PAY-42', branch: 'feature/PAY-42', done: 'verify', why: null, next: 'tests' }], blockers: [] });
@@ -112,7 +114,7 @@ describe('standup commands', () => {
     expect(st.last_checkin).toBe(at(9).toISOString());
     expect(st.standup).toEqual({ done_date: localDate(at(9, 30)) });
     const report = queue().find((q) => q.kind === 'report')!.body;
-    expect(report).toMatchObject({ date: localDate(at(9, 30)), period: { from: at(8, 29).toISOString(), to: at(9).toISOString() }, prompt_version: 'fallback-0', blockers: [] });
+    expect(report).toMatchObject({ date: localDate(at(9, 30)), period: { from: at(8, 29).toISOString(), to: at(9).toISOString() }, prompt_version: 'standup-v1', blockers: [] });
     expect(queue().filter((q) => q.kind === 'event').map((q) => q.body.type)).toEqual(['shown', 'sent']);
   });
 
@@ -167,9 +169,9 @@ describe('materials', () => {
       }],
     };
     const out = render(m, { version: 'v', text: 'p' }, 3_000).join('');
-    expect(out).toContain('> Разработчик: ЗАДАЧА');
-    expect(out).toContain('< Claude: ИТОГ');
-    expect(out).toContain('… (часть переписки опущена)');
+    expect(out).toContain('> developer: ЗАДАЧА');
+    expect(out).toContain('< claude: ИТОГ');
+    expect(out).toContain('… (part of the conversation omitted)');
     expect(out).not.toContain('шаг 0 ');
   });
 
@@ -181,6 +183,42 @@ describe('materials', () => {
     const got = outsideCommits([repo], at(8, 29), new Set([known]));
     expect(got.map((c) => c.message)).toEqual(['PAY-2 manual']);
     expect(got[0]!.branch).toBe('main');
+  });
+});
+
+describe('branch digests (prompt step A)', () => {
+  it('save-digests stores under repo_id and the next prepare shows them as existing_digest', async () => {
+    const repo = makeRepo();
+    state({ repos: { [repo]: 'work' }, last_checkin: at(8, 29).toISOString() });
+    capture(repo, 'feature/PAY-42', at(18, 29));
+    const id = repoKey(repo);
+    const digests = JSON.stringify([{ repo: id, branch: 'feature/PAY-42', digest: 'Goal: webhooks\nDone: verify' }, { repo: '../etc', branch: 'x', digest: 'nope' }]);
+    const r = await standupCommand(['save-digests', digests], ROOT, at(9));
+    expect(r.out).toContain('Сохранено дайджестов: 1');
+    expect(r.out).toContain('пропущено');
+    expect(readDigest(id, 'feature/PAY-42')).toBe('Goal: webhooks\nDone: verify\n');
+    const p = await standupCommand(['prepare'], ROOT, at(9));
+    expect(p.out).toContain('existing_digest:\nGoal: webhooks\nDone: verify');
+  });
+
+  it('rejects input that is not an array', async () => {
+    expect((await standupCommand(['save-digests', '{"repo":"x"}'], ROOT, at(9))).code).toBe(1);
+    expect((await standupCommand(['save-digests', 'oops'], ROOT, at(9))).code).toBe(1);
+  });
+
+  it('commits outside sessions get their own branch block with a repo_id', () => {
+    const out = render({ from: 'a', to: 'b', captures: [], outside: [{ repo: 'api', repoPath: '/w/api', branch: 'main', sha: 'abcdef1234', ts: '2026-09-30T10:00', message: 'PAY-7 manual fix' }] }, { version: 'v', text: 'p' }).join('');
+    expect(out).toContain(`## repo: api · repo_id: ${repoKey('/w/api')} · branch: main`);
+    expect(out).toContain('commits_outside_sessions:\n- 2026-09-30T10:00 abcdef1 PAY-7 manual fix');
+  });
+});
+
+describe('devLanguage', () => {
+  const cap = (text: string) => ({ messages: [{ role: 'user', text }, { role: 'assistant', text: 'english reply here' }] }) as unknown as RawCapture;
+  it('follows what the developer types, not Claude', () => {
+    expect(devLanguage([cap('почини вебхуки в PAY-42')])).toBe('Russian');
+    expect(devLanguage([cap('fix the webhook retries')])).toBe('English');
+    expect(devLanguage([])).toBe('English');
   });
 });
 
