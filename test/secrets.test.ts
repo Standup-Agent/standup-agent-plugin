@@ -18,6 +18,7 @@ const FAKE = {
   awsSecret: j('wJalrXUtnFEMI/K7MDENG/', 'bPxRfiCYEXAMPLEKEY'),
   google: j('AI', 'za', 'SyA-1234567890abcdefghijklmnopqrstu'),
   npm: j('np', 'm_', A36),
+  sendgrid: j('SG', '.aB3dE5fG7hJ9kL1mN3pQ5r', '.', 'S7tU9vW1xY3zA5bC7dE9fG1hJ3kL5mN7pQ9rS1tU3v_-'),
   jwt: j('eyJ', 'hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', '.', 'eyJ', 'zdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ', '.', 'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'),
   bearer: j('abc123', 'DEF456', 'ghi789', 'JKL'),
 };
@@ -46,6 +47,7 @@ describe('redactSecrets: tokens and keys', () => {
     ['aws access key id', FAKE.aws, 'aws_key'],
     ['google api key', FAKE.google, 'google_key'],
     ['npm token', FAKE.npm, 'npm_token'],
+    ['sendgrid key', FAKE.sendgrid, 'sendgrid_key'],
     ['jwt', FAKE.jwt, 'jwt'],
   ])('%s', (_name, secret, kind) => {
     const out = redactSecrets(`here it is: ${secret} — use it`);

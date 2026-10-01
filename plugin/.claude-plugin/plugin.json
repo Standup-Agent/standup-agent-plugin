@@ -1,7 +1,7 @@
 {
   "name": "standup-agent",
   "displayName": "Standup Agent",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Writes your team standup from your work in Claude Code",
   "author": { "name": "Standup Agent" },
   "homepage": "https://standupagent.co"

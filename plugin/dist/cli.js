@@ -184,6 +184,7 @@ var RULES = [
   { kind: "aws_key", re: new RegExp(`${B}(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA|A3T[A-Z0-9])[A-Z0-9]{16}(?![A-Za-z0-9])`, "g") },
   { kind: "google_key", re: new RegExp(`${B}AIza[0-9A-Za-z_-]{35}`, "g") },
   { kind: "npm_token", re: new RegExp(`${B}npm_[A-Za-z0-9]{36}`, "g") },
+  { kind: "sendgrid_key", re: new RegExp(`${B}SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}`, "g") },
   // Authorization headers: Bearer anywhere, Basic/Token only after "Authorization".
   {
     kind: "bearer",
