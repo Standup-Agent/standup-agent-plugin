@@ -2,7 +2,7 @@
 
 Маркетплейс из одного плагина: корень репо — маркетплейс и исходники, сам плагин (то, что уезжает пользователю) — `plugin/`. Репо **публичный**: сюда не кладём ничего внутреннего (URL стендов, ключи, данные пилотов).
 
-Продукт, инварианты и правила работы с Trello описаны в `../CLAUDE.md`. Задачи этого репо — карточки 1, 2, 3, скилл join из 4 и упаковка из 7.
+Продукт, инварианты и правила работы с Trello описаны в `CLAUDE.md` воркспейса: репо `Standup-Agent/standup-agent-docs` (приватный), локально — `../CLAUDE.md`. Задачи этого репо — карточки 1, 2, 3, скилл join из 4 и упаковка из 7.
 
 ## Стек
 
@@ -76,7 +76,7 @@ prompt-cache.json                  # {version, text, fetched_at}, кэш на д
 
 ## Контракт с сервером
 
-Источник правды — `../standup-agent-server/api/openapi.yaml`. Репорт: `id` (UUID, генерирует плагин), `date`, `period {from, to}`, `items [{ticket, branch, done, why, next}]`, `blockers []`, `text`, `prompt_version`. Команду и участника сервер берёт из `member_token`, поэтому плагин их не шлёт.
+Источник правды — `api/openapi.yaml` в репо `Standup-Agent/standup-agent-server` (локально `../standup-agent-server/`). Репорт: `id` (UUID, генерирует плагин), `date`, `period {from, to}`, `items [{ticket, branch, done, why, next}]`, `blockers []`, `text`, `prompt_version`. Команду и участника сервер берёт из `member_token`, поэтому плагин их не шлёт.
 
 ID тикета ищем по ветке и коммитам регэкспом `[A-Z][A-Z0-9]+-\d+`.
 

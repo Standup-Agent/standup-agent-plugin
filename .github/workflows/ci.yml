@@ -1,0 +1,23 @@
+name: ci
+
+# This repo is the marketplace itself (`/plugin marketplace add Standup-Agent/standup-agent-plugin`):
+# whatever lands in main is what users install, so main must stay green and dist/ rebuilt.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: dist/cli.js is up to date
+        run: npm run build && git diff --exit-code -- plugin/dist
