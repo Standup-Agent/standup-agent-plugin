@@ -74,12 +74,12 @@ export function standupCheck(input: HookInput, now: Date, state: State = readSta
   }
   log('info', 'standup: ready');
   return {
-    systemMessage: '📋 Стендап готов',
+    systemMessage: '📋 Your standup is ready',
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: `[Standup Agent] Первая сессия дня: с прошлого стендапа есть работа, черновик стендапа можно собрать.
-Прежде чем выполнять просьбу пользователя, вызови инструмент Skill: skill «standup-agent:standup», args «show» — и пройди его сценарий до конца (показ стендапа и вопрос с 4 кнопками). Только после ответа переходи к просьбе пользователя.
-Исключение: если пользователь пишет о срочной аварии — сначала помоги, стендап предложи потом.`,
+      additionalContext: `[Standup Agent] First session of the day: there is work since the last standup, so a standup draft can be put together.
+Before doing what the user asks, call the Skill tool: skill «standup-agent:standup», args «show» — and follow it to the end (show the standup and the question with 4 buttons). Only after the answer move on to the user's request.
+Exception: if the user writes about an urgent incident, help first and offer the standup afterwards.`,
     },
   };
 }
@@ -140,7 +140,7 @@ export function newRepoCheck(input: HookInput, cliPath: string, state: State = r
   if (matchesWorkOrg(repo.remotes, state.team.work_orgs ?? [])) {
     setRepoKinds({ [repo.path]: 'work' });
     log('info', 'repos: marked work by org', { repo: repo.name });
-    return { systemMessage: `📋 Standup Agent: ${repo.name} — репо организации команды, включён в стендап` };
+    return { systemMessage: `📋 Standup Agent: ${repo.name} belongs to your team’s org — included in your standup` };
   }
 
   markRepoAsked(repo.path);
@@ -154,16 +154,16 @@ export function newRepoCheck(input: HookInput, cliPath: string, state: State = r
 export const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 function askAboutRepo(repo: Repo, teamName?: string): string {
-  const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : ' (без remote)';
-  const set = (kind: string) => `вызови инструмент Skill: skill «standup-agent:standup», args «repos set ${sq(`${repo.path}=${kind}`)}»`;
-  return `[Standup Agent] Пользователь впервые работает в репо ${repo.name}${where} с тех пор, как вступил в команду${teamName ? ` «${teamName}»` : ''}. Этот вопрос задаётся один раз.
+  const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : ' (no remote)';
+  const set = (kind: string) => `call the Skill tool: skill «standup-agent:standup», args «repos set ${sq(`${repo.path}=${kind}`)}»`;
+  return `[Standup Agent] The user is working in the repo ${repo.name}${where} for the first time since joining the team${teamName ? ` «${teamName}»` : ''}. This question is asked once.
 
-Прежде чем выполнять первую просьбу пользователя, вызови AskUserQuestion: вопрос «Включать репо ${repo.name} в стендап?», header «Стендап», две опции:
-- «Да, рабочий» — описание: работа в этом репо попадёт в черновик стендапа (менеджер видит только то, что ты подтвердишь);
-- «Нет, личный» — описание: ничего из этого репо не сохраняется даже локально.
+Before doing the user's first request, call AskUserQuestion: question «Include ${repo.name} in your standup?», header «Standup», two options:
+- «Yes, it’s work» — description: work in this repo goes into your standup draft (your manager only sees what you confirm);
+- «No, personal» — description: nothing from this repo is stored, not even locally.
 
-По ответу сделай одно действие и больше к этому не возвращайся:
-- «Да, рабочий»: ${set('work')}
-- «Нет, личный»: ${set('personal')}
-Если пользователь не ответил или отказался выбирать — ничего не выполняй (репо останется неразмеченным и не будет захватываться; поменять можно через /standup repos). После этого переходи к его просьбе.`;
+Do one action based on the answer and don't come back to it:
+- «Yes, it’s work»: ${set('work')}
+- «No, personal»: ${set('personal')}
+If the user didn't answer or refused to choose, do nothing (the repo stays unmarked and isn't captured; it can be changed with /standup repos). Then move on to their request.`;
 }

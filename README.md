@@ -1,39 +1,39 @@
-# Standup Agent — плагин для Claude Code
+# Standup Agent — Claude Code plugin
 
-Собирает твой стендап из работы в Claude Code. Утром ты видишь готовый черновик: что сделано по задачам с прошлого чекина, что дальше, есть ли блокеры. Его можно отправить в один тап или поправить.
+Writes your standup from your work in Claude Code. In the morning you get a ready draft: what got done on each task since your last check-in, what's next, whether anything is blocking you. Send it in one tap or edit it first.
 
-**Приватность.** Менеджер видит только стендапы, которые ты сам подтвердил. Код, чаты и личные репо не покидают твой компьютер.
+**Privacy.** Your manager only sees standups you confirmed. Code, chats and personal repos never leave your computer.
 
-## Установка
+## Install
 
-Строку установки и ссылку на команду даёт менеджер на странице инвайта `standupagent.co/join/<CODE>`.
+Your manager gives you the invite page `standupagent.co/join/<CODE>` with these lines:
 
 ```
 /plugin marketplace add Standup-Agent/standup-agent-plugin
 /plugin install standup-agent@standup-agent
 ```
 
-Чтобы вступить в команду, вставь в Claude Code обычным сообщением:
+Restart Claude Code, then join the team by pasting this as a regular message:
 
 ```
-Вступи в команду Backend в Standup Agent: standupagent.co/join/K7X2M9QPLA
+Join the Backend team in Standup Agent: standupagent.co/join/K7X2M9QPLA
 ```
 
-Нужен Node.js ≥ 22: на нём работают хуки плагина.
+Requires Node.js ≥ 22 (the plugin hooks run on it). On the first standup Claude Code asks permission for the plugin's skills — choose "don't ask again".
 
-## Команды
+## Commands
 
-| Команда | Что делает |
+| Command | What it does |
 |---|---|
-| `/standup` | показать стендап сейчас |
-| `/standup repos` | показать и поправить, какие репо рабочие, а какие личные |
-| `/standup join <CODE>` | вступить в команду, если ссылка не распозналась |
-| `/standup leave` | выйти из команды и удалить свои данные на сервере |
+| `/standup` | show the standup now |
+| `/standup repos` | see and change which repos are work and which are personal |
+| `/standup join <CODE>` | join a team if the link wasn't recognized |
+| `/standup leave` | leave the team and delete your data on the server |
 
-## Как это работает
+## How it works
 
-1. **Сбор (без LLM).** При закрытии сессии хук берёт из транскрипта твои сообщения и текстовые ответы Claude, а из git — ветку, коммиты и изменённые файлы. Секреты вырезаются, результат пишется в локальный склад. Работа в личных репо не сохраняется вообще.
-2. **Синтез.** На первой сессии дня субагент плагина собирает из склада стендап по тикетам (`PROJ-123`) или веткам.
-3. **Подтверждение.** Отправить / Поправить / ⚠️ Добавить блокер / Не сейчас. На сервер уходит только то, что ты отправил.
+1. **Capture (no LLM).** When a session ends, a hook takes your messages and Claude's text replies from the transcript, and the branch, commits and changed files from git. Secrets are stripped, and the result goes into a local store. Nothing from personal repos is stored at all.
+2. **Synthesis.** On the first session of the day, the plugin's subagent turns the store into a standup by ticket (`PROJ-123`) or branch.
+3. **Confirmation.** Send / Edit / ⚠️ Add a blocker / Not now. Only what you send reaches the server.
 
-Сырьё хранится локально 30 дней и никогда не отправляется.
+Raw materials stay on your computer for 30 days and are never sent anywhere.

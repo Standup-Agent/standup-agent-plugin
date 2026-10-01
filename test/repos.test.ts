@@ -194,7 +194,7 @@ describe('newRepoCheck (SessionStart)', () => {
   it('marks an org repo as work silently, with a one-line notice', () => {
     const r = repo('git@github.com:acme/api.git');
     state({ team: { work_orgs: ['github.com/acme'] } });
-    expect(newRepoCheck(input(r), '/p/cli.js')?.systemMessage).toContain('включён в стендап');
+    expect(newRepoCheck(input(r), '/p/cli.js')?.systemMessage).toContain('included in your standup');
     expect(readState().repos).toEqual({ [r]: 'work' });
   });
 

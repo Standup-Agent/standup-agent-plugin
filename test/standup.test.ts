@@ -63,7 +63,7 @@ describe('standupCheck (SessionStart)', () => {
     state({ repos: { [repo]: 'work' }, last_checkin: at(8, 29).toISOString() });
     capture(repo, 'feature/PAY-42', at(18, 29));
     const out = standupCheck({ session_id: 's', source: 'startup' }, at(9));
-    expect(out?.systemMessage).toBe('📋 Стендап готов');
+    expect(out?.systemMessage).toBe('📋 Your standup is ready');
     expect(out?.hookSpecificOutput?.additionalContext).toContain('standup-agent:standup');
   });
 
@@ -109,7 +109,7 @@ describe('standup commands', () => {
 
     const json = JSON.stringify({ text: 'PAY-42 — webhooks\n  Сделано: verify', items: [{ ticket: 'PAY-42', branch: 'feature/PAY-42', done: 'verify', why: null, next: 'tests' }], blockers: [] });
     const s = await standupCommand(['send', json], ROOT, at(9, 30));
-    expect(s.out).toContain('вступишь в команду'); // no token yet
+    expect(s.out).toContain('once you join a team'); // no token yet
     const st = readState();
     expect(st.last_checkin).toBe(at(9).toISOString());
     expect(st.standup).toEqual({ done_date: localDate(at(9, 30)) });
@@ -126,11 +126,11 @@ describe('standup commands', () => {
     expect(queue()).toEqual([]);
   });
 
-  it('first «Не сейчас» snoozes 2 h, second skips the day without moving last_checkin', async () => {
+  it('first «Not now» snoozes 2 h, second skips the day without moving last_checkin', async () => {
     state({ last_checkin: at(8, 29).toISOString() });
-    expect((await standupCommand(['snooze'], ROOT, at(9))).out).toContain('2 ч');
+    expect((await standupCommand(['snooze'], ROOT, at(9))).out).toContain('2 h');
     expect(readState().standup?.snooze_until).toBe(at(11).toISOString());
-    expect((await standupCommand(['snooze'], ROOT, at(11, 30))).out).toContain('Пропускаем');
+    expect((await standupCommand(['snooze'], ROOT, at(11, 30))).out).toContain('Skipping today');
     expect(readState().standup).toEqual({ done_date: localDate(at(11)) });
     expect(readState().last_checkin).toBe(at(8, 29).toISOString());
     expect(queue().map((q) => q.body.type)).toEqual(['snoozed', 'skipped']);
@@ -138,7 +138,7 @@ describe('standup commands', () => {
 
   it('snooze count resets the next day', async () => {
     state({ standup: { snooze_date: localDate(at(9, 29)), snoozes: 1 } });
-    expect((await standupCommand(['snooze'], ROOT, at(9))).out).toContain('2 ч');
+    expect((await standupCommand(['snooze'], ROOT, at(9))).out).toContain('2 h');
   });
 
   it('prepare splits big materials into parts that fit the Bash output limit', async () => {
@@ -146,7 +146,7 @@ describe('standup commands', () => {
     state({ repos: { [repo]: 'work' }, last_checkin: at(8, 29).toISOString() });
     for (let i = 0; i < 6; i++) capture(repo, `b${i}`, at(10 + i, 29), { messages: [{ role: 'user', text: 'задача ' + 'ж'.repeat(20_000) }, { role: 'assistant', text: 'итог' }] });
     const p1 = await standupCommand(['prepare'], ROOT, at(9));
-    const m = /\[Часть 1 из (\d+)/.exec(p1.out);
+    const m = /\[Part 1 of (\d+)/.exec(p1.out);
     expect(Number(m?.[1])).toBeGreaterThan(1);
     const n = Number(m![1]);
     // Cyrillic is 2 bytes a char: the limit that matters is bytes (30 KB), with room for the part header.
@@ -196,8 +196,8 @@ describe('branch digests (prompt step A)', () => {
     const id = repoKey(repo);
     const digests = JSON.stringify([{ repo: id, branch: 'feature/PAY-42', digest: 'Goal: webhooks\nDone: verify' }, { repo: '../etc', branch: 'x', digest: 'nope' }]);
     const r = await standupCommand(['save-digests', digests], ROOT, at(9));
-    expect(r.out).toContain('Сохранено дайджестов: 1');
-    expect(r.out).toContain('пропущено');
+    expect(r.out).toContain('Digests saved: 1');
+    expect(r.out).toContain('skipped');
     expect(readDigest(id, 'feature/PAY-42')).toBe('Goal: webhooks\nDone: verify\n');
     const p = await standupCommand(['prepare'], ROOT, at(9));
     expect(p.out).toContain('existing_digest:\nGoal: webhooks\nDone: verify');

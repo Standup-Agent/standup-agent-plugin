@@ -37,7 +37,7 @@ var DEFAULTS = {
   rawMaxBytesPerSession: 64 * 1024,
   /** Standup is not shown before this local hour. */
   showNotBeforeHour: 6,
-  /** "Не сейчас" postpones the standup for this long. */
+  /** "Not now" postpones the standup for this long. */
   snoozeHours: 2,
   /** Another terminal won't show the standup while one is showing it. */
   showLockMinutes: 10,
@@ -1178,11 +1178,11 @@ async function request(url, init = {}) {
 }
 async function joinInfo(link) {
   const inv = parseInvite(link);
-  if (!inv) return { code: 1, out: { error: "\u041D\u0435 \u043F\u043E\u0445\u043E\u0436\u0435 \u043D\u0430 \u0438\u043D\u0432\u0430\u0439\u0442-\u0441\u0441\u044B\u043B\u043A\u0443 Standup Agent (\u2026/join/<CODE>)." } };
+  if (!inv) return { code: 1, out: { error: "This doesn\u2019t look like a Standup Agent invite link (\u2026/join/<CODE>)." } };
   const r = await request(`${inv.apiBase}/invites/${inv.code}`);
-  if (!r) return { code: 1, out: { error: `\u0421\u0435\u0440\u0432\u0435\u0440 ${inv.apiBase} \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D. \u041F\u0440\u043E\u0432\u0435\u0440\u044C \u0441\u0435\u0442\u044C \u0438 \u043F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u0435\u0449\u0451 \u0440\u0430\u0437.` } };
-  if (r.status === 404) return { code: 1, out: { error: "\u0421\u0441\u044B\u043B\u043A\u0430 \u043D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0438\u043B\u0438 \u0435\u0451 \u043E\u0442\u043E\u0437\u0432\u0430\u043B\u0438 \u2014 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u0443 \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430 \u043D\u043E\u0432\u0443\u044E." } };
-  if (r.status !== 200) return { code: 1, out: { error: `\u0421\u0435\u0440\u0432\u0435\u0440 \u043E\u0442\u0432\u0435\u0442\u0438\u043B ${r.status}.` } };
+  if (!r) return { code: 1, out: { error: `Can\u2019t reach ${inv.apiBase}. Check your connection and try again.` } };
+  if (r.status === 404) return { code: 1, out: { error: "This invite link is invalid or was revoked \u2014 ask your manager for a new one." } };
+  if (r.status !== 200) return { code: 1, out: { error: `The server responded with ${r.status}.` } };
   const current = readState().team?.name ?? null;
   return {
     code: 0,
@@ -1197,17 +1197,17 @@ async function joinInfo(link) {
 }
 async function joinTeam(link, name, email, now = /* @__PURE__ */ new Date()) {
   const inv = parseInvite(link);
-  if (!inv) return { code: 1, out: { error: "\u041D\u0435 \u043F\u043E\u0445\u043E\u0436\u0435 \u043D\u0430 \u0438\u043D\u0432\u0430\u0439\u0442-\u0441\u0441\u044B\u043B\u043A\u0443 Standup Agent." } };
-  if (!name.trim() || !/^\S+@\S+\.\S+$/.test(email.trim())) return { code: 1, out: { error: "\u041D\u0443\u0436\u043D\u044B \u0438\u043C\u044F \u0438 email." } };
+  if (!inv) return { code: 1, out: { error: "This doesn\u2019t look like a Standup Agent invite link." } };
+  if (!name.trim() || !/^\S+@\S+\.\S+$/.test(email.trim())) return { code: 1, out: { error: "A name and an email are required." } };
   const r = await request(`${inv.apiBase}/join`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code: inv.code, display_name: name.trim(), email: email.trim() })
   });
-  if (!r) return { code: 1, out: { error: "\u0421\u0435\u0440\u0432\u0435\u0440 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u0435\u0449\u0451 \u0440\u0430\u0437." } };
-  if (r.status === 404) return { code: 1, out: { error: "\u0421\u0441\u044B\u043B\u043A\u0430 \u043D\u0435\u0432\u0435\u0440\u043D\u0430\u044F \u0438\u043B\u0438 \u0435\u0451 \u043E\u0442\u043E\u0437\u0432\u0430\u043B\u0438 \u2014 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u0443 \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430 \u043D\u043E\u0432\u0443\u044E." } };
-  if (r.status === 429) return { code: 1, out: { error: "\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u043D\u043E\u0433\u043E \u043F\u043E\u043F\u044B\u0442\u043E\u043A \u2014 \u043F\u043E\u0434\u043E\u0436\u0434\u0438 \u043C\u0438\u043D\u0443\u0442\u0443." } };
-  if (r.status !== 200 || typeof r.body.member_token !== "string") return { code: 1, out: { error: `\u0421\u0435\u0440\u0432\u0435\u0440 \u043E\u0442\u0432\u0435\u0442\u0438\u043B ${r.status}.` } };
+  if (!r) return { code: 1, out: { error: "Can\u2019t reach the server. Try again." } };
+  if (r.status === 404) return { code: 1, out: { error: "This invite link is invalid or was revoked \u2014 ask your manager for a new one." } };
+  if (r.status === 429) return { code: 1, out: { error: "Too many attempts \u2014 wait a minute." } };
+  if (r.status !== 200 || typeof r.body.member_token !== "string") return { code: 1, out: { error: `The server responded with ${r.status}.` } };
   const auth = { member_token: r.body.member_token, member_id: String(r.body.member_id), api_base: inv.apiBase };
   writeFileAtomic(paths.auth(), JSON.stringify(auth));
   const workOrgs = Array.isArray(r.body.work_orgs) ? r.body.work_orgs.filter((o) => typeof o === "string") : [];
@@ -1219,21 +1219,21 @@ async function joinTeam(link, name, email, now = /* @__PURE__ */ new Date()) {
     s.team = { name: String(r.body.team_name), work_orgs: workOrgs, joined_at: now.toISOString() };
   });
   log("info", "team: joined");
-  return { code: 0, out: { team_name: r.body.team_name, work_orgs: workOrgs, next: "\u0422\u0435\u043F\u0435\u0440\u044C \u043F\u0435\u0440\u0432\u0438\u0447\u043D\u0430\u044F \u0440\u0430\u0437\u043C\u0435\u0442\u043A\u0430 \u0440\u0435\u043F\u043E: repos scan." } };
+  return { code: 0, out: { team_name: r.body.team_name, work_orgs: workOrgs, next: "Next: initial repo marking \u2014 repos scan." } };
 }
 async function leave() {
   const token = memberToken();
   if (token) {
     const r = await request(`${apiBaseUrl()}/me`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
     if (!r || r.status !== 204 && r.status !== 401) {
-      return { code: 1, out: { error: "\u0421\u0435\u0440\u0432\u0435\u0440 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u2014 \u0434\u0430\u043D\u043D\u044B\u0435 \u043D\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435 \u043D\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u044B. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u043F\u043E\u0437\u0436\u0435, \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u0442\u0440\u043E\u0433\u0430\u043B." } };
+      return { code: 1, out: { error: "Can\u2019t reach the server \u2014 nothing was deleted there. Try again later; nothing local was touched." } };
     }
   }
   for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), (0, import_node_path13.join)(dataDir(), "standup-materials.json"), paths.state()]) {
     (0, import_node_fs11.rmSync)(p, { recursive: true, force: true });
   }
   log("info", "team: left");
-  return { code: 0, out: { left: true, note: "\u0422\u044B \u0432\u044B\u0448\u0435\u043B \u0438\u0437 \u043A\u043E\u043C\u0430\u043D\u0434\u044B. \u0422\u0432\u043E\u0438 \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u044B \u0443\u0434\u0430\u043B\u0435\u043D\u044B \u043D\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435, \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0435 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B \u0438 \u0440\u0430\u0437\u043C\u0435\u0442\u043A\u0430 \u0440\u0435\u043F\u043E \u2014 \u043D\u0430 \u044D\u0442\u043E\u043C \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0435." } };
+  return { code: 0, out: { left: true, note: "You left the team. Your standups were deleted on the server, and your local materials and repo marking on this computer." } };
 }
 
 // src/standup/commands.ts
@@ -1378,7 +1378,7 @@ function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
     }
     body.push("");
   }
-  if (body.length === 0) body.push("\u0420\u0430\u0431\u043E\u0442\u044B \u0441 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E.");
+  if (body.length === 0) body.push("No work found since the last standup.");
   return split([...head, ...body]);
 }
 function sessionLines(c, budget) {
@@ -1509,7 +1509,7 @@ async function prepare(args, pluginRoot, now) {
         ...s.standup,
         pending: { from: from.toISOString(), to: now.toISOString(), prompt_version: prompt.version },
         showing_until: new Date(now.getTime() + DEFAULTS.showLockMinutes * 6e4).toISOString(),
-        // No answer (the user went straight to an emergency) = ask again later, like «Не сейчас».
+        // No answer (the user went straight to an emergency) = ask again later, like «Not now».
         snooze_until: new Date(now.getTime() + DEFAULTS.snoozeHours * H).toISOString()
       };
     });
@@ -1518,24 +1518,24 @@ async function prepare(args, pluginRoot, now) {
     try {
       parts = JSON.parse((0, import_node_fs14.readFileSync)(partsFile(), "utf8"));
     } catch {
-      return { code: 1, out: "\u041D\u0435\u0442 \u043F\u043E\u0434\u0433\u043E\u0442\u043E\u0432\u043B\u0435\u043D\u043D\u044B\u0445 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u043E\u0432: \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438 standup prepare \u0431\u0435\u0437 --part." };
+      return { code: 1, out: "No prepared materials: run standup prepare without --part first." };
     }
   }
-  if (part > parts.length) return { code: 1, out: `\u0427\u0430\u0441\u0442\u0435\u0439 \u0432\u0441\u0435\u0433\u043E ${parts.length}.` };
-  const header = parts.length > 1 ? `[\u0427\u0430\u0441\u0442\u044C ${part} \u0438\u0437 ${parts.length}${part < parts.length ? ` \u2014 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0430\u044F: standup prepare --part ${part + 1}` : ""}]
+  if (part > parts.length) return { code: 1, out: `There are only ${parts.length} parts.` };
+  const header = parts.length > 1 ? `[Part ${part} of ${parts.length}${part < parts.length ? ` \u2014 next: standup prepare --part ${part + 1}` : ""}]
 ` : "";
   return { code: 0, out: header + parts[part - 1] };
 }
 var str2 = (v) => typeof v === "string" && v.trim() !== "" ? v.trim() : null;
 function buildReport(input, pending, now) {
   const text = str2(input.text);
-  if (!text) return "\u043D\u0443\u0436\u0435\u043D text \u2014 \u0441\u0442\u0435\u043D\u0434\u0430\u043F \u0440\u043E\u0432\u043D\u043E \u0432 \u0442\u043E\u043C \u0432\u0438\u0434\u0435, \u0432 \u043A\u0430\u043A\u043E\u043C \u0435\u0433\u043E \u0443\u0432\u0438\u0434\u0435\u043B \u0440\u0430\u0437\u0440\u0430\u0431\u043E\u0442\u0447\u0438\u043A";
-  if (!Array.isArray(input.items)) return "\u043D\u0443\u0436\u0435\u043D items: [{ticket, branch, done, why, next}]";
+  if (!text) return "text is required \u2014 the standup exactly as the developer saw it";
+  if (!Array.isArray(input.items)) return "items is required: [{ticket, branch, done, why, next}]";
   const items = [];
   for (const raw of input.items) {
     const i = raw ?? {};
     const done = str2(i.done);
-    if (!done) return "\u0443 \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u044D\u043B\u0435\u043C\u0435\u043D\u0442\u0430 items \u043D\u0443\u0436\u043D\u043E \u043F\u043E\u043B\u0435 done";
+    if (!done) return "every item needs a done field";
     items.push({ ticket: str2(i.ticket), branch: str2(i.branch), done, why: str2(i.why), next: str2(i.next) });
   }
   const blockers = Array.isArray(input.blockers) ? input.blockers.map(str2).filter((b) => b !== null) : [];
@@ -1546,7 +1546,7 @@ async function send(json, now) {
   try {
     input = JSON.parse(json);
   } catch {
-    return { code: 1, out: "\u0410\u0440\u0433\u0443\u043C\u0435\u043D\u0442 \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C JSON {text, items, blockers} \u0432 \u043E\u0434\u0438\u043D\u0430\u0440\u043D\u044B\u0445 \u043A\u0430\u0432\u044B\u0447\u043A\u0430\u0445 (\u0430\u043F\u043E\u0441\u0442\u0440\u043E\u0444 \u0432\u043D\u0443\u0442\u0440\u0438 \u0437\u0430\u043C\u0435\u043D\u0438 \u043D\u0430 \u2019)." };
+    return { code: 1, out: "The argument must be JSON {text, items, blockers} in single quotes (replace apostrophes inside with \u2019)." };
   }
   const state = readState();
   const pending = state.standup?.pending ?? { from: periodFrom(state, now).toISOString(), to: now.toISOString(), prompt_version: "unknown" };
@@ -1560,9 +1560,9 @@ async function send(json, now) {
   });
   const r = await flush(now.getTime());
   log("info", "standup: sent", { items: report.items.length, blockers: report.blockers.length, delivered: r.left === 0, stopped: r.stopped });
-  if (r.left === 0) return { code: 0, out: "\u041E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u043E \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0443." };
-  if (r.stopped === "no_token") return { code: 0, out: "\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E. \u0423\u0439\u0434\u0451\u0442 \u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0443, \u043A\u0430\u043A \u0442\u043E\u043B\u044C\u043A\u043E \u0442\u044B \u0432\u0441\u0442\u0443\u043F\u0438\u0448\u044C \u0432 \u043A\u043E\u043C\u0430\u043D\u0434\u0443." };
-  return { code: 0, out: "\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E, \u043D\u043E \u0441\u0435\u0440\u0432\u0435\u0440 \u0441\u0435\u0439\u0447\u0430\u0441 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u2014 \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442\u0441\u044F \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438 \u043F\u0440\u0438 \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0435 Claude Code." };
+  if (r.left === 0) return { code: 0, out: "Sent to your manager." };
+  if (r.stopped === "no_token") return { code: 0, out: "Saved. It will go to your manager once you join a team." };
+  return { code: 0, out: "Saved, but the server is unreachable right now \u2014 it will be sent automatically next time Claude Code starts." };
 }
 function snooze(now) {
   const today = localDate(now);
@@ -1574,16 +1574,16 @@ function snooze(now) {
     s.standup = skipped ? { done_date: today } : { ...st, snooze_date: today, snoozes, snooze_until: new Date(now.getTime() + DEFAULTS.snoozeHours * H).toISOString(), showing_until: void 0, pending: void 0 };
   });
   enqueueEvent(skipped ? "skipped" : "snoozed", now);
-  return skipped ? { code: 0, out: "\u041F\u0440\u043E\u043F\u0443\u0441\u043A\u0430\u0435\u043C \u0441\u0435\u0433\u043E\u0434\u043D\u044F. \u0420\u0430\u0431\u043E\u0442\u0430 \u0437\u0430 \u0441\u0435\u0433\u043E\u0434\u043D\u044F \u0432\u043E\u0439\u0434\u0451\u0442 \u0432 \u0437\u0430\u0432\u0442\u0440\u0430\u0448\u043D\u0438\u0439 \u0441\u0442\u0435\u043D\u0434\u0430\u043F." } : { code: 0, out: `\u0425\u043E\u0440\u043E\u0448\u043E, \u043D\u0430\u043F\u043E\u043C\u043D\u044E \u043D\u0435 \u0440\u0430\u043D\u044C\u0448\u0435 \u0447\u0435\u043C \u0447\u0435\u0440\u0435\u0437 ${DEFAULTS.snoozeHours} \u0447.` };
+  return skipped ? { code: 0, out: "Skipping today. Today\u2019s work will go into tomorrow\u2019s standup." } : { code: 0, out: `OK, I\u2019ll remind you in ${DEFAULTS.snoozeHours} h at the earliest.` };
 }
 function saveDigests(json) {
   let list2;
   try {
     list2 = JSON.parse(json);
   } catch {
-    return { code: 1, out: "\u0410\u0440\u0433\u0443\u043C\u0435\u043D\u0442 \u2014 JSON-\u043C\u0430\u0441\u0441\u0438\u0432 [{repo, branch, digest}] \u0432 \u043E\u0434\u0438\u043D\u0430\u0440\u043D\u044B\u0445 \u043A\u0430\u0432\u044B\u0447\u043A\u0430\u0445 (\u0430\u043F\u043E\u0441\u0442\u0440\u043E\u0444 \u0432\u043D\u0443\u0442\u0440\u0438 \u0437\u0430\u043C\u0435\u043D\u0438 \u043D\u0430 \u2019)." };
+    return { code: 1, out: "The argument is a JSON array [{repo, branch, digest}] in single quotes (replace apostrophes inside with \u2019)." };
   }
-  if (!Array.isArray(list2)) return { code: 1, out: "\u043D\u0443\u0436\u0435\u043D \u043C\u0430\u0441\u0441\u0438\u0432 [{repo, branch, digest}]" };
+  if (!Array.isArray(list2)) return { code: 1, out: "an array [{repo, branch, digest}] is required" };
   let saved = 0;
   const skipped = [];
   for (const raw of list2) {
@@ -1599,7 +1599,7 @@ function saveDigests(json) {
     saved++;
   }
   log("info", "standup: digests saved", { saved, skipped: skipped.length });
-  return { code: skipped.length && !saved ? 1 : 0, out: `\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E \u0434\u0430\u0439\u0434\u0436\u0435\u0441\u0442\u043E\u0432: ${saved}${skipped.length ? `; \u043F\u0440\u043E\u043F\u0443\u0449\u0435\u043D\u043E (repo \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C repo_id \u0438\u0437 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u043E\u0432): ${skipped.join(", ")}` : ""}` };
+  return { code: skipped.length && !saved ? 1 : 0, out: `Digests saved: ${saved}${skipped.length ? `; skipped (repo must be the repo_id from the materials): ${skipped.join(", ")}` : ""}` };
 }
 
 // src/hookio.ts
@@ -1672,12 +1672,12 @@ function standupCheck(input, now, state = readState()) {
   }
   log("info", "standup: ready");
   return {
-    systemMessage: "\u{1F4CB} \u0421\u0442\u0435\u043D\u0434\u0430\u043F \u0433\u043E\u0442\u043E\u0432",
+    systemMessage: "\u{1F4CB} Your standup is ready",
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext: `[Standup Agent] \u041F\u0435\u0440\u0432\u0430\u044F \u0441\u0435\u0441\u0441\u0438\u044F \u0434\u043D\u044F: \u0441 \u043F\u0440\u043E\u0448\u043B\u043E\u0433\u043E \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u0435\u0441\u0442\u044C \u0440\u0430\u0431\u043E\u0442\u0430, \u0447\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u043C\u043E\u0436\u043D\u043E \u0441\u043E\u0431\u0440\u0430\u0442\u044C.
-\u041F\u0440\u0435\u0436\u0434\u0435 \u0447\u0435\u043C \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0442\u044C \u043F\u0440\u043E\u0441\u044C\u0431\u0443 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F, \u0432\u044B\u0437\u043E\u0432\u0438 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442 Skill: skill \xABstandup-agent:standup\xBB, args \xABshow\xBB \u2014 \u0438 \u043F\u0440\u043E\u0439\u0434\u0438 \u0435\u0433\u043E \u0441\u0446\u0435\u043D\u0430\u0440\u0438\u0439 \u0434\u043E \u043A\u043E\u043D\u0446\u0430 (\u043F\u043E\u043A\u0430\u0437 \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 \u0438 \u0432\u043E\u043F\u0440\u043E\u0441 \u0441 4 \u043A\u043D\u043E\u043F\u043A\u0430\u043C\u0438). \u0422\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u0441\u043B\u0435 \u043E\u0442\u0432\u0435\u0442\u0430 \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438 \u043A \u043F\u0440\u043E\u0441\u044C\u0431\u0435 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F.
-\u0418\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435: \u0435\u0441\u043B\u0438 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043F\u0438\u0448\u0435\u0442 \u043E \u0441\u0440\u043E\u0447\u043D\u043E\u0439 \u0430\u0432\u0430\u0440\u0438\u0438 \u2014 \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u043E\u043C\u043E\u0433\u0438, \u0441\u0442\u0435\u043D\u0434\u0430\u043F \u043F\u0440\u0435\u0434\u043B\u043E\u0436\u0438 \u043F\u043E\u0442\u043E\u043C.`
+      additionalContext: `[Standup Agent] First session of the day: there is work since the last standup, so a standup draft can be put together.
+Before doing what the user asks, call the Skill tool: skill \xABstandup-agent:standup\xBB, args \xABshow\xBB \u2014 and follow it to the end (show the standup and the question with 4 buttons). Only after the answer move on to the user's request.
+Exception: if the user writes about an urgent incident, help first and offer the standup afterwards.`
     }
   };
 }
@@ -1719,7 +1719,7 @@ function newRepoCheck(input, cliPath, state = readState()) {
   if (matchesWorkOrg(repo.remotes, state.team.work_orgs ?? [])) {
     setRepoKinds({ [repo.path]: "work" });
     log("info", "repos: marked work by org", { repo: repo.name });
-    return { systemMessage: `\u{1F4CB} Standup Agent: ${repo.name} \u2014 \u0440\u0435\u043F\u043E \u043E\u0440\u0433\u0430\u043D\u0438\u0437\u0430\u0446\u0438\u0438 \u043A\u043E\u043C\u0430\u043D\u0434\u044B, \u0432\u043A\u043B\u044E\u0447\u0451\u043D \u0432 \u0441\u0442\u0435\u043D\u0434\u0430\u043F` };
+    return { systemMessage: `\u{1F4CB} Standup Agent: ${repo.name} belongs to your team\u2019s org \u2014 included in your standup` };
   }
   markRepoAsked(repo.path);
   log("info", "repos: asking about a new repo", { repo: repo.name });
@@ -1729,18 +1729,18 @@ function newRepoCheck(input, cliPath, state = readState()) {
 }
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 function askAboutRepo(repo, teamName) {
-  const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : " (\u0431\u0435\u0437 remote)";
-  const set2 = (kind) => `\u0432\u044B\u0437\u043E\u0432\u0438 \u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442 Skill: skill \xABstandup-agent:standup\xBB, args \xABrepos set ${sq(`${repo.path}=${kind}`)}\xBB`;
-  return `[Standup Agent] \u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u0432\u043F\u0435\u0440\u0432\u044B\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u0440\u0435\u043F\u043E ${repo.name}${where} \u0441 \u0442\u0435\u0445 \u043F\u043E\u0440, \u043A\u0430\u043A \u0432\u0441\u0442\u0443\u043F\u0438\u043B \u0432 \u043A\u043E\u043C\u0430\u043D\u0434\u0443${teamName ? ` \xAB${teamName}\xBB` : ""}. \u042D\u0442\u043E\u0442 \u0432\u043E\u043F\u0440\u043E\u0441 \u0437\u0430\u0434\u0430\u0451\u0442\u0441\u044F \u043E\u0434\u0438\u043D \u0440\u0430\u0437.
+  const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : " (no remote)";
+  const set2 = (kind) => `call the Skill tool: skill \xABstandup-agent:standup\xBB, args \xABrepos set ${sq(`${repo.path}=${kind}`)}\xBB`;
+  return `[Standup Agent] The user is working in the repo ${repo.name}${where} for the first time since joining the team${teamName ? ` \xAB${teamName}\xBB` : ""}. This question is asked once.
 
-\u041F\u0440\u0435\u0436\u0434\u0435 \u0447\u0435\u043C \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0442\u044C \u043F\u0435\u0440\u0432\u0443\u044E \u043F\u0440\u043E\u0441\u044C\u0431\u0443 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044F, \u0432\u044B\u0437\u043E\u0432\u0438 AskUserQuestion: \u0432\u043E\u043F\u0440\u043E\u0441 \xAB\u0412\u043A\u043B\u044E\u0447\u0430\u0442\u044C \u0440\u0435\u043F\u043E ${repo.name} \u0432 \u0441\u0442\u0435\u043D\u0434\u0430\u043F?\xBB, header \xAB\u0421\u0442\u0435\u043D\u0434\u0430\u043F\xBB, \u0434\u0432\u0435 \u043E\u043F\u0446\u0438\u0438:
-- \xAB\u0414\u0430, \u0440\u0430\u0431\u043E\u0447\u0438\u0439\xBB \u2014 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435: \u0440\u0430\u0431\u043E\u0442\u0430 \u0432 \u044D\u0442\u043E\u043C \u0440\u0435\u043F\u043E \u043F\u043E\u043F\u0430\u0434\u0451\u0442 \u0432 \u0447\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u0441\u0442\u0435\u043D\u0434\u0430\u043F\u0430 (\u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440 \u0432\u0438\u0434\u0438\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0442\u043E, \u0447\u0442\u043E \u0442\u044B \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0448\u044C);
-- \xAB\u041D\u0435\u0442, \u043B\u0438\u0447\u043D\u044B\u0439\xBB \u2014 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435: \u043D\u0438\u0447\u0435\u0433\u043E \u0438\u0437 \u044D\u0442\u043E\u0433\u043E \u0440\u0435\u043F\u043E \u043D\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442\u0441\u044F \u0434\u0430\u0436\u0435 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u043E.
+Before doing the user's first request, call AskUserQuestion: question \xABInclude ${repo.name} in your standup?\xBB, header \xABStandup\xBB, two options:
+- \xABYes, it\u2019s work\xBB \u2014 description: work in this repo goes into your standup draft (your manager only sees what you confirm);
+- \xABNo, personal\xBB \u2014 description: nothing from this repo is stored, not even locally.
 
-\u041F\u043E \u043E\u0442\u0432\u0435\u0442\u0443 \u0441\u0434\u0435\u043B\u0430\u0439 \u043E\u0434\u043D\u043E \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u0438 \u0431\u043E\u043B\u044C\u0448\u0435 \u043A \u044D\u0442\u043E\u043C\u0443 \u043D\u0435 \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0439\u0441\u044F:
-- \xAB\u0414\u0430, \u0440\u0430\u0431\u043E\u0447\u0438\u0439\xBB: ${set2("work")}
-- \xAB\u041D\u0435\u0442, \u043B\u0438\u0447\u043D\u044B\u0439\xBB: ${set2("personal")}
-\u0415\u0441\u043B\u0438 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0435 \u043E\u0442\u0432\u0435\u0442\u0438\u043B \u0438\u043B\u0438 \u043E\u0442\u043A\u0430\u0437\u0430\u043B\u0441\u044F \u0432\u044B\u0431\u0438\u0440\u0430\u0442\u044C \u2014 \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0439 (\u0440\u0435\u043F\u043E \u043E\u0441\u0442\u0430\u043D\u0435\u0442\u0441\u044F \u043D\u0435\u0440\u0430\u0437\u043C\u0435\u0447\u0435\u043D\u043D\u044B\u043C \u0438 \u043D\u0435 \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u0445\u0432\u0430\u0442\u044B\u0432\u0430\u0442\u044C\u0441\u044F; \u043F\u043E\u043C\u0435\u043D\u044F\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0447\u0435\u0440\u0435\u0437 /standup repos). \u041F\u043E\u0441\u043B\u0435 \u044D\u0442\u043E\u0433\u043E \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438 \u043A \u0435\u0433\u043E \u043F\u0440\u043E\u0441\u044C\u0431\u0435.`;
+Do one action based on the answer and don't come back to it:
+- \xABYes, it\u2019s work\xBB: ${set2("work")}
+- \xABNo, personal\xBB: ${set2("personal")}
+If the user didn't answer or refused to choose, do nothing (the repo stays unmarked and isn't captured; it can be changed with /standup repos). Then move on to their request.`;
 }
 
 // src/cli.ts

@@ -62,7 +62,7 @@ async function prepare(args: string[], pluginRoot: string, now: Date): Promise<{
         ...s.standup,
         pending: { from: from.toISOString(), to: now.toISOString(), prompt_version: prompt.version },
         showing_until: new Date(now.getTime() + DEFAULTS.showLockMinutes * 60_000).toISOString(),
-        // No answer (the user went straight to an emergency) = ask again later, like «Не сейчас».
+        // No answer (the user went straight to an emergency) = ask again later, like «Not now».
         snooze_until: new Date(now.getTime() + DEFAULTS.snoozeHours * H).toISOString(),
       };
     });
@@ -71,11 +71,11 @@ async function prepare(args: string[], pluginRoot: string, now: Date): Promise<{
     try {
       parts = JSON.parse(readFileSync(partsFile(), 'utf8')) as string[];
     } catch {
-      return { code: 1, out: 'Нет подготовленных материалов: сначала выполни standup prepare без --part.' };
+      return { code: 1, out: 'No prepared materials: run standup prepare without --part first.' };
     }
   }
-  if (part > parts.length) return { code: 1, out: `Частей всего ${parts.length}.` };
-  const header = parts.length > 1 ? `[Часть ${part} из ${parts.length}${part < parts.length ? ` — следующая: standup prepare --part ${part + 1}` : ''}]\n` : '';
+  if (part > parts.length) return { code: 1, out: `There are only ${parts.length} parts.` };
+  const header = parts.length > 1 ? `[Part ${part} of ${parts.length}${part < parts.length ? ` — next: standup prepare --part ${part + 1}` : ''}]\n` : '';
   return { code: 0, out: header + parts[part - 1] };
 }
 
@@ -90,13 +90,13 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !=
 /** Validate what Claude passes; the period and prompt version come from `prepare`, not from Claude. */
 export function buildReport(input: SendInput, pending: { from: string; to: string; prompt_version: string }, now: Date): Report | string {
   const text = str(input.text);
-  if (!text) return 'нужен text — стендап ровно в том виде, в каком его увидел разработчик';
-  if (!Array.isArray(input.items)) return 'нужен items: [{ticket, branch, done, why, next}]';
+  if (!text) return 'text is required — the standup exactly as the developer saw it';
+  if (!Array.isArray(input.items)) return 'items is required: [{ticket, branch, done, why, next}]';
   const items: ReportItem[] = [];
   for (const raw of input.items as unknown[]) {
     const i = (raw ?? {}) as Record<string, unknown>;
     const done = str(i.done);
-    if (!done) return 'у каждого элемента items нужно поле done';
+    if (!done) return 'every item needs a done field';
     items.push({ ticket: str(i.ticket), branch: str(i.branch), done, why: str(i.why), next: str(i.next) });
   }
   const blockers = Array.isArray(input.blockers) ? input.blockers.map(str).filter((b): b is string => b !== null) : [];
@@ -108,7 +108,7 @@ async function send(json: string, now: Date): Promise<{ code: number; out: strin
   try {
     input = JSON.parse(json) as SendInput;
   } catch {
-    return { code: 1, out: 'Аргумент должен быть JSON {text, items, blockers} в одинарных кавычках (апостроф внутри замени на ’).' };
+    return { code: 1, out: 'The argument must be JSON {text, items, blockers} in single quotes (replace apostrophes inside with ’).' };
   }
   const state = readState();
   const pending = state.standup?.pending ?? { from: periodFrom(state, now).toISOString(), to: now.toISOString(), prompt_version: 'unknown' };
@@ -125,12 +125,12 @@ async function send(json: string, now: Date): Promise<{ code: number; out: strin
   });
   const r = await flush(now.getTime());
   log('info', 'standup: sent', { items: report.items.length, blockers: report.blockers.length, delivered: r.left === 0, stopped: r.stopped });
-  if (r.left === 0) return { code: 0, out: 'Отправлено менеджеру.' };
-  if (r.stopped === 'no_token') return { code: 0, out: 'Сохранено. Уйдёт менеджеру, как только ты вступишь в команду.' };
-  return { code: 0, out: 'Сохранено, но сервер сейчас недоступен — отправится автоматически при следующем запуске Claude Code.' };
+  if (r.left === 0) return { code: 0, out: 'Sent to your manager.' };
+  if (r.stopped === 'no_token') return { code: 0, out: 'Saved. It will go to your manager once you join a team.' };
+  return { code: 0, out: 'Saved, but the server is unreachable right now — it will be sent automatically next time Claude Code starts.' };
 }
 
-/** First «Не сейчас» today: again in 2 hours. Second: skip the day, last_checkin stays. */
+/** First «Not now» today: again in 2 hours. Second: skip the day, last_checkin stays. */
 function snooze(now: Date): { code: number; out: string } {
   const today = localDate(now);
   let skipped = false;
@@ -144,8 +144,8 @@ function snooze(now: Date): { code: number; out: string } {
   });
   enqueueEvent(skipped ? 'skipped' : 'snoozed', now);
   return skipped
-    ? { code: 0, out: 'Пропускаем сегодня. Работа за сегодня войдёт в завтрашний стендап.' }
-    : { code: 0, out: `Хорошо, напомню не раньше чем через ${DEFAULTS.snoozeHours} ч.` };
+    ? { code: 0, out: 'Skipping today. Today’s work will go into tomorrow’s standup.' }
+    : { code: 0, out: `OK, I’ll remind you in ${DEFAULTS.snoozeHours} h at the earliest.` };
 }
 
 /** Step A of the standup prompt: the subagent saves updated branch digests (they never leave the machine). */
@@ -154,9 +154,9 @@ function saveDigests(json: string): { code: number; out: string } {
   try {
     list = JSON.parse(json);
   } catch {
-    return { code: 1, out: 'Аргумент — JSON-массив [{repo, branch, digest}] в одинарных кавычках (апостроф внутри замени на ’).' };
+    return { code: 1, out: 'The argument is a JSON array [{repo, branch, digest}] in single quotes (replace apostrophes inside with ’).' };
   }
-  if (!Array.isArray(list)) return { code: 1, out: 'нужен массив [{repo, branch, digest}]' };
+  if (!Array.isArray(list)) return { code: 1, out: 'an array [{repo, branch, digest}] is required' };
   let saved = 0;
   const skipped: string[] = [];
   for (const raw of list) {
@@ -172,5 +172,5 @@ function saveDigests(json: string): { code: number; out: string } {
     saved++;
   }
   log('info', 'standup: digests saved', { saved, skipped: skipped.length });
-  return { code: skipped.length && !saved ? 1 : 0, out: `Сохранено дайджестов: ${saved}${skipped.length ? `; пропущено (repo должен быть repo_id из материалов): ${skipped.join(', ')}` : ''}` };
+  return { code: skipped.length && !saved ? 1 : 0, out: `Digests saved: ${saved}${skipped.length ? `; skipped (repo must be the repo_id from the materials): ${skipped.join(', ')}` : ''}` };
 }

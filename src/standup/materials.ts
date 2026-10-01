@@ -67,7 +67,7 @@ export function loadCaptures(fromMs: number): RawCapture[] {
 
 /**
  * The author's commits in work repos since `from` that no capture already holds: work done
- * outside Claude Code (card 1, «Доработки»). `limitPerRepo` 1 makes it a cheap «any work?» check.
+ * outside Claude Code (card 1, «Доработки» section). `limitPerRepo` 1 makes it a cheap «any work?» check.
  */
 export function outsideCommits(repos: string[], from: Date, known: Set<string>, limitPerRepo: number = CAPTURE.maxCommitsPerBranch): OutsideCommit[] {
   const out: OutsideCommit[] = [];
@@ -153,7 +153,7 @@ export function render(m: Materials, prompt: { version: string; text: string }, 
     }
     body.push('');
   }
-  if (body.length === 0) body.push('Работы с последнего стендапа не найдено.');
+  if (body.length === 0) body.push('No work found since the last standup.');
   return split([...head, ...body]);
 }
 

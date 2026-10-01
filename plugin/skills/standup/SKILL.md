@@ -1,67 +1,69 @@
 ---
 name: standup
-description: Standup Agent — вступление в команду, утренний стендап разработчика и какие репо в него идут. Используй, когда пользователь просит вступить в команду Standup Agent или присылает ссылку вида …/join/<CODE>; на /standup (показать стендап сейчас), /standup repos, /standup leave, «какие репо в стендапе», «выключи/включи репо X в стендапе», «это личный проект, не бери в стендап», и когда хук Standup Agent просит показать стендап.
-argument-hint: "[show | join <ссылка> | leave | repos [scan] | repos set <path>=work|personal]"
+description: Standup Agent — joining a team, the developer's morning standup, and which repos go into it. Use when the user asks to join a Standup Agent team or sends a link like …/join/<CODE>; on /standup (show the standup now), /standup repos, /standup leave, "which repos are in my standup", "turn repo X off/on in my standup", "this is a personal project, keep it out of my standup", and when the Standup Agent hook asks to show the standup.
+argument-hint: "[show | join <link> | leave | repos [scan] | repos set <path>=work|personal]"
 allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js *)
 ---
 
 # Standup Agent
 
-Менеджер видит только стендапы, которые разработчик сам подтвердил. Код, чаты и личные репо не покидают компьютер.
+The manager only sees standups the developer confirmed. Code, chats and personal repos never leave the computer.
 
-Все команды выполняй через Bash **ровно в этом виде** (без кавычек вокруг пути к cli.js, без префиксов) — иначе появится запрос разрешения:
-`node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js --data ${CLAUDE_PLUGIN_DATA} <команда>`
+Run every command through Bash **exactly in this form** (no quotes around the cli.js path, no prefixes), otherwise a permission prompt appears:
+`node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js --data ${CLAUDE_PLUGIN_DATA} <command>`
 
-Ниже `CLI` — это и есть `node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js --data ${CLAUDE_PLUGIN_DATA}`.
+Below, `CLI` means exactly `node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js --data ${CLAUDE_PLUGIN_DATA}`.
 
-Что делать — по аргументам:
-- нет аргументов или `show` → «Стендап»;
-- `join <ссылка>` или в сообщении пользователя инвайт-ссылка `…/join/<CODE>` → «Вступление в команду»;
-- `leave` → «Выход из команды»;
-- `repos set …` → выполни `CLI repos set …` с теми же аргументами, коротко подтверди одной строкой;
-- `repos scan` → «Первичная разметка репо»;
-- `repos` → «Просмотр и правка разметки».
+All text you show the user is in English.
 
-## Стендап
+What to do, by arguments:
+- no arguments or `show` → "Standup";
+- `join <link>`, or an invite link `…/join/<CODE>` in the user's message → "Joining a team";
+- `leave` → "Leaving the team";
+- `repos set …` → run `CLI repos set …` with the same arguments and confirm in one line;
+- `repos scan` → "Initial repo marking";
+- `repos` → "Viewing and changing repo marking".
 
-1. Вызови инструмент Skill: skill «standup-agent:synth» и дождись результата — он соберёт стендап в отдельном контексте. Сам материалы не читай и субагентов через Agent не запускай: в основной контекст попадает только готовый стендап.
-2. Скилл вернёт JSON `{"standup": {"text", "items", "blockers"}, "blocker_hint", "prompt_version"}` — держи его у себя, ниже он нужен целиком. Если `standup.text` — «НЕТ РАБОТЫ», скажи одной строкой, что с прошлого стендапа работы не видно, и переходи к просьбе пользователя.
-3. Результат `synth` пользователь **не видит**. Покажи стендап так: вызови AskUserQuestion, где `question` — это строка «Отправить стендап менеджеру?», пустая строка и дальше `standup.text` **дословно и целиком** (с учётом правок). Если `blocker_hint` не null — после текста пустая строка и `💡 <blocker_hint>` (это подсказка, не часть стендапа: в текст и в `blockers` её не добавляй). Отдельным сообщением текст не дублируй. header «Стендап», ровно 4 опции в этом порядке:
-   - «Отправить» — «Уйдёт менеджеру как есть»;
-   - «Поправить» — «Скажи словами, что изменить»;
-   - «⚠️ Добавить блокер» — «Сообщить менеджеру, что застрял»;
-   - «Не сейчас» — «Напомню позже».
-4. По ответу:
-   - **Отправить** → `CLI standup send '<json>'`, где json — `{"text": "<текст ровно как показан, без 💡-подсказки>", "items": [...], "blockers": [...]}` из `standup` с учётом правок; в `blockers` — только то, что добавил сам разработчик. JSON в одинарных кавычках; апостроф `'` внутри замени на `’`. Покажи пользователю строку, которую вернула команда.
-   - **Поправить** → спроси, что поменять (или возьми правку из ответа, если она уже там). Сделай ровно то, что сказал разработчик, остальное не трогай — его формулировка главнее, не спорь. Обнови текст и JSON, выполни `CLI standup event edited`, снова задай тот же вопрос с обновлённым текстом внутри.
-   - **⚠️ Добавить блокер** → спроси одной фразой, что мешает (если была 💡-подсказка — предложи её формулировку). Добавь в конец текста строку `⚠️ <блокер>` и в `blockers`, подсказку убери, выполни `CLI standup event blocker`, снова задай вопрос с обновлённым текстом внутри.
-   - **Не сейчас** → `CLI standup snooze`, покажи, что она вернула.
-   - Пользователь проигнорировал вопрос и попросил другое — просто делай его просьбу.
-5. Если правку или блокер пользователь прислал **отдельным сообщением**, разрешение на команды к этому моменту уже сброшено: сначала снова вызови инструмент Skill `standup-agent:standup` с args `continue`, потом продолжай с того же места (правка → показ → вопрос). `continue` — продолжение текущего стендапа, `synth` заново не вызывай.
-6. После ответа переходи к исходной просьбе пользователя, если она была.
+## Standup
 
-## Вступление в команду
+1. Call the Skill tool: skill "standup-agent:synth", and wait for the result — it builds the standup in a separate context. Don't read the materials yourself and don't start subagents with Agent: only the finished standup comes into the main context.
+2. The skill returns JSON `{"standup": {"text", "items", "blockers"}, "blocker_hint", "prompt_version"}` — keep all of it, you need it below. If `standup.text` is "NO WORK", say in one line that there's no work since the last standup and move on to the user's request.
+3. The user **doesn't see** the `synth` result. Show the standup like this: call AskUserQuestion where `question` is the line "Send this standup to your manager?", an empty line, and then `standup.text` **verbatim and in full** (with edits applied). If `blocker_hint` is not null, add an empty line and `💡 <blocker_hint>` after the text (it's a hint, not part of the standup: don't add it to the text or to `blockers`). Don't repeat the text in a separate message. header "Standup", exactly 4 options in this order:
+   - "Send" — "Goes to your manager as is";
+   - "Edit" — "Tell me what to change";
+   - "⚠️ Add a blocker" — "Let your manager know you're stuck";
+   - "Not now" — "I'll remind you later".
+4. By answer:
+   - **Send** → `CLI standup send '<json>'`, where json is `{"text": "<text exactly as shown, without the 💡 hint>", "items": [...], "blockers": [...]}` from `standup` with edits applied; `blockers` only has what the developer added. JSON in single quotes; replace an apostrophe `'` inside with `’`. Show the user the line the command printed.
+   - **Edit** → ask what to change (or take the edit from the answer if it's already there). Do exactly what the developer said and leave the rest alone — their wording wins, don't argue. Update the text and the JSON, run `CLI standup event edited`, then ask the same question again with the updated text inside.
+   - **⚠️ Add a blocker** → ask in one sentence what's in the way (if there was a 💡 hint, offer its wording). Append a line `⚠️ <blocker>` to the text and add it to `blockers`, drop the hint, run `CLI standup event blocker`, then ask the question again with the updated text inside.
+   - **Not now** → `CLI standup snooze`, show what it printed.
+   - The user ignored the question and asked for something else — just do what they asked.
+5. If the user sent the edit or the blocker **as a separate message**, the command permission has already been reset by then: first call the Skill tool `standup-agent:standup` again with args `continue`, then carry on from the same place (edit → show → question). `continue` resumes the current standup; don't call `synth` again.
+6. After the answer, move on to the user's original request, if there was one.
 
-1. `CLI join-info '<ссылка целиком>'`. Ошибка — покажи её одной строкой и остановись.
-2. Вызови AskUserQuestion: вопрос «Вступаю в команду <team_name> как <имя> (<email>), верно?» — имя и email из `suggested` (если их нет — спроси текстом). Добавь в вопрос строку: «Менеджер увидит только стендапы, которые ты сам подтвердишь. Код, чаты и личные репо не покидают твой компьютер.» Если `leaves_current_team` — добавь: «Ты выйдешь из команды <current_team>.» header «Команда», опции: «Да, вступить» и «Изменить имя или email».
-3. «Изменить…» → спроси, что поменять (новое сообщение → сначала Skill `standup-agent:standup` с args `continue`).
-4. `CLI join '<ссылка>' '<имя>' '<email>'` (апостроф в имени замени на ’). Ответ: `team_name`, `work_orgs`.
-5. Сразу переходи к «Первичной разметке репо» ниже.
+## Joining a team
 
-## Выход из команды (`/standup leave`)
+1. `CLI join-info '<the whole link>'`. On error, show it in one line and stop.
+2. Call AskUserQuestion: question "Joining team <team_name> as <name> (<email>) — correct?" — name and email from `suggested` (if they're missing, ask in text). Add a line to the question: "Your manager only sees standups you confirm. Code, chats and personal repos never leave your computer." If `leaves_current_team`, add: "You'll leave the team <current_team>." header "Team", options: "Yes, join" and "Change name or email".
+3. "Change…" → ask what to change (a new message → first Skill `standup-agent:standup` with args `continue`).
+4. `CLI join '<link>' '<name>' '<email>'` (replace an apostrophe in the name with ’). The answer has `team_name`, `work_orgs`.
+5. Go straight to "Initial repo marking" below.
 
-Переспроси через AskUserQuestion: «Выйти из команды? Твои стендапы удалятся на сервере, а локальные материалы — на этом компьютере», опции «Выйти» / «Отмена». По «Выйти» — `CLI leave` и покажи `note`.
+## Leaving the team (`/standup leave`)
 
-## Первичная разметка репо (после вступления в команду или `/standup repos scan`)
+Confirm with AskUserQuestion: "Leave the team? Your standups will be deleted on the server and your local materials on this computer", options "Leave" / "Cancel". On "Leave" — `CLI leave` and show `note`.
 
-1. `CLI repos scan`. Репо из организации команды (`auto_marked_work`) скан уже включил сам — их не спрашивай.
-2. Одним сообщением: «Нашёл N репо, где ты работал за месяц. K из организации команды, их я включил: …». Если `ask` пуст — на этом всё.
-3. Про репо из `ask` спроси **один раз и на одном экране**:
-   - до 4 репо — AskUserQuestion с `multiSelect: true`: вопрос «Какие из этих репо рабочие? Невыбранные будут личными», header «Репо», опция на каждое репо (label — имя репо, description — remote и дата последней активности);
-   - больше 4 — нумерованным списком текстом (имя, remote, последняя активность; путь — если имена совпадают) и попроси ответить номерами рабочих; остальные будут личными.
-4. Одной командой `CLI repos set '<path>=work' '<path>=personal' …` запиши выбранные как `work`, остальные из `ask` как `personal`. Если пользователь отказался отвечать — ничего не записывай. (Ответ номерами пришёл отдельным сообщением — сначала Skill `standup-agent:standup` с args `continue`.)
-5. `backfill_sessions` в ответе — сколько сессий за последние 3 дня дособирается в фоне. Подтверди: что включено, что нет, что поменять можно через `/standup repos`.
+## Initial repo marking (after joining a team or `/standup repos scan`)
 
-## Просмотр и правка разметки (`/standup repos` без `scan`)
+1. `CLI repos scan`. Repos from the team's org (`auto_marked_work`) are already turned on by the scan — don't ask about them.
+2. One message: "Found N repos you worked in this month. K are from your team's org, I turned them on: …". If `ask` is empty, that's it.
+3. Ask about the repos in `ask` **once and on one screen**:
+   - up to 4 repos — AskUserQuestion with `multiSelect: true`: question "Which of these repos are work? The rest will be personal", header "Repos", an option per repo (label — repo name, description — remote and last activity date);
+   - more than 4 — a numbered list in text (name, remote, last activity; path if names clash) and ask to reply with the numbers of the work ones; the rest will be personal.
+4. With one command `CLI repos set '<path>=work' '<path>=personal' …` mark the chosen ones `work` and the rest of `ask` `personal`. If the user declined to answer, write nothing. (If the numbers came in a separate message, first Skill `standup-agent:standup` with args `continue`.)
+5. `backfill_sessions` in the answer is how many sessions from the last 3 days are being picked up in the background. Confirm: what's on, what's off, and that it can be changed with `/standup repos`.
 
-Здесь **не запускай** `repos scan` и не опрашивай про неразмеченные репо. Выполни `CLI repos list` и покажи коротко: рабочие, потом личные (по имени папки, путь — если имена совпадают). В конце одной строкой: «Разметить остальные репо, где ты работал за месяц: /standup repos scan». Если пользователь просит поменять — `CLI repos set '<path>=work|personal'` и подтверди одной строкой.
+## Viewing and changing repo marking (`/standup repos` without `scan`)
+
+Here **don't run** `repos scan` and don't ask about unmarked repos. Run `CLI repos list` and show it briefly: work repos, then personal (by folder name; path if names clash). End with one line: "To mark the other repos you worked in this month: /standup repos scan". If the user asks to change something — `CLI repos set '<path>=work|personal'` and confirm in one line.

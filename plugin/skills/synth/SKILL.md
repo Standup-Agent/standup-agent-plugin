@@ -1,6 +1,6 @@
 ---
 name: synth
-description: Собирает черновик стендапа Standup Agent в отдельном контексте. Вызывается только из скилла standup-agent:standup.
+description: Builds the Standup Agent standup draft in a separate context. Called only from the standup-agent:standup skill.
 user-invocable: false
 context: fork
 agent: standup-agent:standup-synth
@@ -8,6 +8,6 @@ background: false
 allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js *)
 ---
 
-Собери черновик стендапа по своим инструкциям. Команда для материалов:
+Build the standup draft following your instructions. The command for the materials:
 `node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js --data ${CLAUDE_PLUGIN_DATA} standup prepare`
-(следующие части — та же команда с `--part N`).
+(further parts — the same command with `--part N`).

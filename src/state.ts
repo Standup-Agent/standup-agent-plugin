@@ -32,9 +32,9 @@ export interface State {
 export interface StandupState {
   /** Sent or skipped today: no more standups until tomorrow. */
   done_date?: string;
-  /** Not before this time (ISO): after «Не сейчас», or after a show left without an answer. */
+  /** Not before this time (ISO): after «Not now», or after a show left without an answer. */
   snooze_until?: string;
-  /** «Не сейчас» count for `snooze_date`; the second one skips the day. */
+  /** «Not now» count for `snooze_date`; the second one skips the day. */
   snooze_date?: string;
   snoozes?: number;
   /** Another terminal is showing the standup until this time (ISO). */

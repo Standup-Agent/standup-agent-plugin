@@ -1,4 +1,4 @@
-// Values marked [ДЕФОЛТ] on the Trello board. Keep them here, not scattered in code.
+// Values marked [ДЕФОЛТ] (default) on the Trello board. Keep them here, not scattered in code.
 export const DEFAULTS = {
   /** Raw session capture is kept locally this long, then deleted. */
   rawTtlDays: 30,
@@ -6,7 +6,7 @@ export const DEFAULTS = {
   rawMaxBytesPerSession: 64 * 1024,
   /** Standup is not shown before this local hour. */
   showNotBeforeHour: 6,
-  /** "Не сейчас" postpones the standup for this long. */
+  /** "Not now" postpones the standup for this long. */
   snoozeHours: 2,
   /** Another terminal won't show the standup while one is showing it. */
   showLockMinutes: 10,

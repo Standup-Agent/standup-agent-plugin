@@ -4,13 +4,13 @@
     "name": "Standup Agent"
   },
   "metadata": {
-    "description": "Standup Agent: командный стендап из работы в Claude Code"
+    "description": "Standup Agent: team standups written from your work in Claude Code"
   },
   "plugins": [
     {
       "name": "standup-agent",
       "source": "./plugin",
-      "description": "Собирает командный стендап из работы в Claude Code"
+      "description": "Writes your team standup from your work in Claude Code"
     }
   ]
 }

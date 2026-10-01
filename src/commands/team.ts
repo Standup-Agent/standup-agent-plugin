@@ -43,11 +43,11 @@ async function request(url: string, init: RequestInit = {}): Promise<{ status: n
 
 export async function joinInfo(link: string): Promise<Out> {
   const inv = parseInvite(link);
-  if (!inv) return { code: 1, out: { error: 'Не похоже на инвайт-ссылку Standup Agent (…/join/<CODE>).' } };
+  if (!inv) return { code: 1, out: { error: 'This doesn’t look like a Standup Agent invite link (…/join/<CODE>).' } };
   const r = await request(`${inv.apiBase}/invites/${inv.code}`);
-  if (!r) return { code: 1, out: { error: `Сервер ${inv.apiBase} недоступен. Проверь сеть и попробуй ещё раз.` } };
-  if (r.status === 404) return { code: 1, out: { error: 'Ссылка неверная или её отозвали — попроси у менеджера новую.' } };
-  if (r.status !== 200) return { code: 1, out: { error: `Сервер ответил ${r.status}.` } };
+  if (!r) return { code: 1, out: { error: `Can’t reach ${inv.apiBase}. Check your connection and try again.` } };
+  if (r.status === 404) return { code: 1, out: { error: 'This invite link is invalid or was revoked — ask your manager for a new one.' } };
+  if (r.status !== 200) return { code: 1, out: { error: `The server responded with ${r.status}.` } };
   const current = readState().team?.name ?? null;
   return {
     code: 0,
@@ -63,17 +63,17 @@ export async function joinInfo(link: string): Promise<Out> {
 
 export async function joinTeam(link: string, name: string, email: string, now = new Date()): Promise<Out> {
   const inv = parseInvite(link);
-  if (!inv) return { code: 1, out: { error: 'Не похоже на инвайт-ссылку Standup Agent.' } };
-  if (!name.trim() || !/^\S+@\S+\.\S+$/.test(email.trim())) return { code: 1, out: { error: 'Нужны имя и email.' } };
+  if (!inv) return { code: 1, out: { error: 'This doesn’t look like a Standup Agent invite link.' } };
+  if (!name.trim() || !/^\S+@\S+\.\S+$/.test(email.trim())) return { code: 1, out: { error: 'A name and an email are required.' } };
   const r = await request(`${inv.apiBase}/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code: inv.code, display_name: name.trim(), email: email.trim() }),
   });
-  if (!r) return { code: 1, out: { error: 'Сервер недоступен. Попробуй ещё раз.' } };
-  if (r.status === 404) return { code: 1, out: { error: 'Ссылка неверная или её отозвали — попроси у менеджера новую.' } };
-  if (r.status === 429) return { code: 1, out: { error: 'Слишком много попыток — подожди минуту.' } };
-  if (r.status !== 200 || typeof r.body.member_token !== 'string') return { code: 1, out: { error: `Сервер ответил ${r.status}.` } };
+  if (!r) return { code: 1, out: { error: 'Can’t reach the server. Try again.' } };
+  if (r.status === 404) return { code: 1, out: { error: 'This invite link is invalid or was revoked — ask your manager for a new one.' } };
+  if (r.status === 429) return { code: 1, out: { error: 'Too many attempts — wait a minute.' } };
+  if (r.status !== 200 || typeof r.body.member_token !== 'string') return { code: 1, out: { error: `The server responded with ${r.status}.` } };
 
   const auth: Auth = { member_token: r.body.member_token, member_id: String(r.body.member_id), api_base: inv.apiBase };
   writeFileAtomic(paths.auth(), JSON.stringify(auth));
@@ -87,7 +87,7 @@ export async function joinTeam(link: string, name: string, email: string, now = 
     s.team = { name: String(r.body.team_name), work_orgs: workOrgs, joined_at: now.toISOString() };
   });
   log('info', 'team: joined');
-  return { code: 0, out: { team_name: r.body.team_name, work_orgs: workOrgs, next: 'Теперь первичная разметка репо: repos scan.' } };
+  return { code: 0, out: { team_name: r.body.team_name, work_orgs: workOrgs, next: 'Next: initial repo marking — repos scan.' } };
 }
 
 /** `/standup leave`: delete this member on the server, then everything local. */
@@ -97,12 +97,12 @@ export async function leave(): Promise<Out> {
     const r = await request(`${apiBaseUrl()}/me`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
     // 401: already removed by the manager — local cleanup is still right.
     if (!r || (r.status !== 204 && r.status !== 401)) {
-      return { code: 1, out: { error: 'Сервер недоступен — данные на сервере не удалены. Попробуй позже, локально ничего не трогал.' } };
+      return { code: 1, out: { error: 'Can’t reach the server — nothing was deleted there. Try again later; nothing local was touched.' } };
     }
   }
   for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), join(dataDir(), 'standup-materials.json'), paths.state()]) {
     rmSync(p, { recursive: true, force: true });
   }
   log('info', 'team: left');
-  return { code: 0, out: { left: true, note: 'Ты вышел из команды. Твои стендапы удалены на сервере, локальные материалы и разметка репо — на этом компьютере.' } };
+  return { code: 0, out: { left: true, note: 'You left the team. Your standups were deleted on the server, and your local materials and repo marking on this computer.' } };
 }
