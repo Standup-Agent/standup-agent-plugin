@@ -14,7 +14,7 @@ Run every command through Bash **exactly in this form** (no quotes around the cl
 
 Below, `CLI` means exactly `node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js --data ${CLAUDE_PLUGIN_DATA}`.
 
-All text you show the user is in English.
+Talk to the user in their language — the one they write to you in. The quoted texts below (questions, headers, button labels and descriptions, confirmations) are English templates: say them in the user's language. The same goes for what the CLI prints (`note`, status lines): relay it in the user's language, don't paste it verbatim. Don't translate `standup.text` and `blocker_hint`: they're already in the developer's language.
 
 What to do, by arguments:
 - no arguments or `show` → "Standup";
@@ -34,10 +34,10 @@ What to do, by arguments:
    - "⚠️ Add a blocker" — "Let your manager know you're stuck";
    - "Not now" — "I'll remind you later".
 4. By answer:
-   - **Send** → `CLI standup send '<json>'`, where json is `{"text": "<text exactly as shown, without the 💡 hint>", "items": [...], "blockers": [...]}` from `standup` with edits applied; `blockers` only has what the developer added. JSON in single quotes; replace an apostrophe `'` inside with `’`. Show the user the line the command printed.
+   - **Send** → `CLI standup send '<json>'`, where json is `{"text": "<text exactly as shown, without the 💡 hint>", "items": [...], "blockers": [...]}` from `standup` with edits applied; `blockers` only has what the developer added. JSON in single quotes; replace an apostrophe `'` inside with `’`. Tell the user what the command printed.
    - **Edit** → ask what to change (or take the edit from the answer if it's already there). Do exactly what the developer said and leave the rest alone — their wording wins, don't argue. Update the text and the JSON, run `CLI standup event edited`, then ask the same question again with the updated text inside.
    - **⚠️ Add a blocker** → ask in one sentence what's in the way (if there was a 💡 hint, offer its wording). Append a line `⚠️ <blocker>` to the text and add it to `blockers`, drop the hint, run `CLI standup event blocker`, then ask the question again with the updated text inside.
-   - **Not now** → `CLI standup snooze`, show what it printed.
+   - **Not now** → `CLI standup snooze`, tell the user what it printed.
    - The user ignored the question and asked for something else — just do what they asked.
 5. If the user sent the edit or the blocker **as a separate message**, the command permission has already been reset by then: first call the Skill tool `standup-agent:standup` again with args `continue`, then carry on from the same place (edit → show → question). `continue` resumes the current standup; don't call `synth` again.
 6. After the answer, move on to the user's original request, if there was one.
@@ -52,7 +52,7 @@ What to do, by arguments:
 
 ## Leaving the team (`/standup leave`)
 
-Confirm with AskUserQuestion: "Leave the team? Your standups will be deleted on the server and your local materials on this computer", options "Leave" / "Cancel". On "Leave" — `CLI leave` and show `note`.
+Confirm with AskUserQuestion: "Leave the team? Your standups will be deleted on the server and your local materials on this computer", options "Leave" / "Cancel". On "Leave" — `CLI leave` and tell the user its `note`.
 
 ## Initial repo marking (after joining a team or `/standup repos scan`)
 

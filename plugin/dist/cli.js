@@ -1677,7 +1677,8 @@ function standupCheck(input, now, state = readState()) {
       hookEventName: "SessionStart",
       additionalContext: `[Standup Agent] First session of the day: there is work since the last standup, so a standup draft can be put together.
 Before doing what the user asks, call the Skill tool: skill \xABstandup-agent:standup\xBB, args \xABshow\xBB \u2014 and follow it to the end (show the standup and the question with 4 buttons). Only after the answer move on to the user's request.
-Exception: if the user writes about an urgent incident, help first and offer the standup afterwards.`
+Exception: if the user writes about an urgent incident, help first and offer the standup afterwards.
+Talk to the user in their language.`
     }
   };
 }
@@ -1731,7 +1732,7 @@ var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 function askAboutRepo(repo, teamName) {
   const where = repo.remotes[0] ? ` (${repo.remotes[0]})` : " (no remote)";
   const set2 = (kind) => `call the Skill tool: skill \xABstandup-agent:standup\xBB, args \xABrepos set ${sq(`${repo.path}=${kind}`)}\xBB`;
-  return `[Standup Agent] The user is working in the repo ${repo.name}${where} for the first time since joining the team${teamName ? ` \xAB${teamName}\xBB` : ""}. This question is asked once.
+  return `[Standup Agent] The user is working in the repo ${repo.name}${where} for the first time since joining the team${teamName ? ` \xAB${teamName}\xBB` : ""}. This question is asked once. Ask it in the user's language: the quoted texts below are English templates.
 
 Before doing the user's first request, call AskUserQuestion: question \xABInclude ${repo.name} in your standup?\xBB, header \xABStandup\xBB, two options:
 - \xABYes, it\u2019s work\xBB \u2014 description: work in this repo goes into your standup draft (your manager only sees what you confirm);

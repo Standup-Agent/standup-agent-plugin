@@ -1,7 +1,7 @@
 {
   "name": "standup-agent-plugin",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Standup Agent — Claude Code plugin",
   "engines": {
     "node": ">=22"
