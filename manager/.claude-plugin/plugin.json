@@ -1,0 +1,8 @@
+{
+  "name": "standup-agent-manager",
+  "displayName": "Standup Agent for managers",
+  "version": "0.1.0",
+  "description": "Team standups for the manager in Claude: one scheduled check per team, a team document, and a day log of decisions and questions",
+  "author": { "name": "Standup Agent" },
+  "homepage": "https://standupagent.co"
+}

@@ -11,6 +11,11 @@
       "name": "standup-agent",
       "source": "./plugin",
       "description": "Writes your team standup from your work in Claude Code"
+    },
+    {
+      "name": "standup-agent-manager",
+      "source": "./manager",
+      "description": "For managers in Claude (Cowork): one scheduled standup check per team, a team document and a day log"
     }
   ]
 }

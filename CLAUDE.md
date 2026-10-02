@@ -1,6 +1,6 @@
 # CLAUDE.md — standup-agent-plugin
 
-Маркетплейс из одного плагина: корень репо — маркетплейс и исходники, сам плагин (то, что уезжает пользователю) — `plugin/`. Репо **публичный**: сюда не кладём ничего внутреннего (URL стендов, ключи, данные пилотов).
+Маркетплейс из двух плагинов: корень репо — маркетплейс и исходники. `plugin/` — плагин разработчика для Claude Code (то, что уезжает разработчику), `manager/` — плагин менеджера для Cowork: только скилл `standup-manager` (карточки 6a/6b), без кода и без коннектора (коннектор менеджер подключает сам, иначе инструменты задвоятся). Репо **публичный**: сюда не кладём ничего внутреннего (URL стендов, ключи, данные пилотов).
 
 Продукт, инварианты и правила работы с Trello описаны в `CLAUDE.md` воркспейса: репо `Standup-Agent/standup-agent-docs` (приватный), локально — `../CLAUDE.md`. Задачи этого репо — карточки 1, 2, 3, скилл join из 4 и упаковка из 7.
 
@@ -13,7 +13,8 @@
 ## Структура
 
 ```
-.claude-plugin/marketplace.json  # маркетплейс, source: "./plugin"
+.claude-plugin/marketplace.json  # маркетплейс: standup-agent → ./plugin, standup-agent-manager → ./manager
+manager/                         # плагин менеджера (Cowork): .claude-plugin/plugin.json + skills/standup-manager/SKILL.md
 plugin/                          # ← только это ставится пользователю
   .claude-plugin/plugin.json     # манифест
   hooks/hooks.json               # SessionStart, SessionEnd → node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js <cmd>

@@ -37,3 +37,9 @@ Requires Node.js ≥ 22 (the plugin hooks run on it). On the first standup Claud
 3. **Confirmation.** Send / Edit / ⚠️ Add a blocker / Not now. Only what you send reaches the server.
 
 Raw materials stay on your computer for 30 days and are never sent anywhere.
+
+## For managers: `standup-agent-manager`
+
+A second plugin in the same marketplace, for managers in Claude Desktop (Cowork). It has no code, only the `standup-manager` skill: it sets up one scheduled check per team (the morning digest, then hourly updates — only when there's something new), keeps a pinned document "Standups <team>" with a tab per day, and saves the manager's decisions, questions and assignments from any chat to the day log, so every next update shows "Earlier today".
+
+It works on top of the Standup Agent connector (`https://standupagent.co/mcp`), which the manager connects separately in Settings → Connectors. Then in Cowork: "Set up the standups for team Backend".

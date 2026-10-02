@@ -10,7 +10,7 @@
     "build": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=cjs --outfile=plugin/dist/cli.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "validate": "claude plugin validate plugin"
+    "validate": "claude plugin validate plugin && claude plugin validate manager"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
