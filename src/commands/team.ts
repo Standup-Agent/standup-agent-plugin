@@ -31,6 +31,11 @@ export function parseInvite(link: string): Invite | null {
 
 type Out = { code: number; out: unknown };
 
+/** The site's privacy policy on the invite's host: `https://host/api` → `https://host/privacy`. */
+export function privacyUrl(apiBase: string): string {
+  return apiBase.replace(/\/api\/?$/, '') + '/privacy';
+}
+
 async function request(url: string, init: RequestInit = {}): Promise<{ status: number; body: Record<string, unknown> } | null> {
   try {
     const r = await fetch(url, { ...init, signal: AbortSignal.timeout(NET.timeoutMs) });
@@ -54,6 +59,8 @@ export async function joinInfo(link: string): Promise<Out> {
     out: {
       team_name: r.body.team_name,
       suggested: suggestIdentity(),
+      // Shown under the privacy message before the developer confirms (card 4b).
+      privacy_url: privacyUrl(inv.apiBase),
       // MVP: one team per developer; joining another one leaves the current.
       current_team: current,
       leaves_current_team: current !== null && current !== r.body.team_name,
@@ -100,7 +107,7 @@ export async function leave(): Promise<Out> {
       return { code: 1, out: { error: 'Can’t reach the server — nothing was deleted there. Try again later; nothing local was touched.' } };
     }
   }
-  for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), join(dataDir(), 'standup-materials.json'), paths.state()]) {
+  for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), join(dataDir(), 'standup-materials.json'), join(dataDir(), 'notes.jsonl'), paths.state()]) {
     rmSync(p, { recursive: true, force: true });
   }
   log('info', 'team: left');

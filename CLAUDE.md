@@ -19,7 +19,7 @@ plugin/                          # ← только это ставится по
   .claude-plugin/plugin.json     # манифест
   hooks/hooks.json               # SessionStart, SessionEnd → node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js <cmd>
   skills/join/SKILL.md           # (задача 4) узнаёт ссылку standupagent.co/join/<CODE>
-  skills/standup/SKILL.md        # /standup: показ стендапа (4 кнопки), разметка репо (repos, repos scan)
+  skills/standup/SKILL.md        # /standup: меню, показ стендапа (4 кнопки), заметки и дополнение к отправленному (2a), приватность при join (4b), разметка репо
   skills/synth/SKILL.md          # context: fork + background: false → субагент standup-synth синхронно
   agents/standup-synth.md        # субагент синтеза: материалы из `standup prepare`, шаг A → `standup save-digests`, возвращает только стендап + blocker_hint
   prompts/standup.fallback.md    # запасная копия промпта синтеза (основной — GET /prompts/standup, кэш на день)
@@ -29,7 +29,8 @@ src/
   commands/repos.ts      # repos scan | set <path>=work|personal | list — вызывает Claude через Bash, печатает JSON
   standup/schedule.ts    # когда показывать: ≥ 6:00, не отправлен/пропущен сегодня, не отложен, не показывается в другом терминале
   standup/materials.ts   # материалы для синтеза: сырьё после last_checkin + коммиты вне сессий, части до 24 КБ (байты UTF-8: лимит вывода Bash ~30 КБ)
-  standup/commands.ts    # standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker
+  standup/commands.ts    # standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker | status | note add|list|rm | addendum '<json>'
+  standup/notes.ts       # заметки разработчика к стендапу (2a): notes.jsonl, фильтр секретов, ветка и тикет только в рабочем репо
   api.ts                 # очередь queue/ → POST /reports, /events; ретрай при следующем старте (`cli.js flush`)
   prompt.ts              # промпт синтеза с сервера / запасной
   hookio.ts              # чтение и разбор stdin хука
@@ -58,7 +59,8 @@ auth.json                          # member_token (не логировать)
 digests/<repo>/<branch>/raw/<session>_<YYYY-MM-DD>.json # сырьё: сессия × репо × ветка × локальный день, TTL 30 дней от последней активности (mtime файла)
                                    # <repo> = имя-<8 hex sha256 пути>, <branch> = encodeURIComponent(ветка)
 digests/<repo>/<branch>/digest.md  # приватный дайджест ветки (шаг A промпта: Goal/Done/Why/State/Left), переписывается синтезом, не уходит наружу
-queue/*.json                       # неотправленные репорты (ретрай, идемпотентность по report.id)
+notes.jsonl                        # заметки к следующему стендапу (2a): текст, время, ветка/тикет в рабочем репо; уходят только внутри подтверждённого стендапа, после отправки удаляются
+queue/*.json                       # неотправленные репорты, дополнения и события (ретрай, идемпотентность по id)
 prompt-cache.json                  # {version, text, fetched_at}, кэш на день
 ```
 
@@ -77,13 +79,14 @@ prompt-cache.json                  # {version, text, fetched_at}, кэш на д
 - Неразмеченный репо не захватывается. Директории без git пропускаем. Ключ разметки в `state.repos` — вывод `git rev-parse --show-toplevel`; worktree засчитывается по основному checkout.
 - **Репо определяется по `cwd` каждой записи транскрипта**, а не по `cwd` из SessionEnd: сессия может начаться в одном репо и закончиться в другом. Записи из личных и неразмеченных репо отбрасываются в парсере до фильтра секретов. Неразмеченные пути запоминаются в `unmarked_seen`: о них спросят на SessionStart, а `repos set …=work` захватит эти сессии.
 - Каждый захват переписывает сессию целиком: сначала удаляет все её сырые файлы, потом пишет куски заново. Бюджет `rawMaxBytesPerSegment` — на кусок, а не на сессию.
+- Заметки (`/standup <текст>`) пишутся без LLM, с фильтром секретов; ветку и тикет к ним добавляем, только если заметка написана в рабочем репо. В материалы синтеза идут все заметки (`developer_notes`), `send` удаляет те, что были в показанном стендапе, «Не сейчас» их сохраняет.
 - Сводку компакции Claude Code (`isCompactSummary`) берём, только если до неё сессия не заходила в неразмеченный или личный репо: иначе сводка может пересказывать их.
 - `standup prepare` перед сборкой материалов дозахватывает сессии рабочих репо, изменённые после последнего захвата (в том числе текущую), — стендап видит и незакрытые сессии.
 - Страховка на SessionStart только читает каталоги и `stat`, содержимое транскриптов не открывает; найденное отдаёт отсоединённому воркеру `capture '<json-массив jobs>'`.
 
 ## Контракт с сервером
 
-Источник правды — `api/openapi.yaml` в репо `Standup-Agent/standup-agent-server` (локально `../standup-agent-server/`). Репорт: `id` (UUID, генерирует плагин), `date`, `period {from, to}`, `items [{ticket, branch, done, why, next}]`, `blockers []`, `text`, `prompt_version`. Команду и участника сервер берёт из `member_token`, поэтому плагин их не шлёт.
+Источник правды — `api/openapi.yaml` в репо `Standup-Agent/standup-agent-server` (локально `../standup-agent-server/`). Репорт: `id` (UUID, генерирует плагин), `date`, `period {from, to}`, `items [{ticket, branch, done, why, next}]`, `blockers []`, `text`, `prompt_version`. Дополнение к отправленному сегодня репорту: `POST /reports/{id}/addendum {id, text, ticket}`, id репорта — `state.standup.sent_report_id`. Команду и участника сервер берёт из `member_token`, поэтому плагин их не шлёт.
 
 ID тикета ищем по ветке и коммитам регэкспом `[A-Z][A-Z0-9]+-\d+`.
 

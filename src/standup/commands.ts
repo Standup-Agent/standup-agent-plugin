@@ -1,11 +1,12 @@
 /**
- * `standup prepare [--part N] | send '<json>' | snooze | event <type>` — run by Claude through
- * Bash from the standup skill and the synthesis subagent. Output is for Claude to read.
+ * `standup prepare [--part N] | send '<json>' | snooze | event <type> | status | note add|list|rm |
+ * addendum '<json>'` — run by Claude through Bash from the standup skill and the synthesis
+ * subagent. Output is for Claude to read.
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { enqueueEvent, enqueueReport, flush, type EventType, type Report, type ReportItem } from '../api.js';
+import { enqueueAddendum, enqueueEvent, enqueueReport, flush, memberToken, type EventType, type Report, type ReportItem } from '../api.js';
 import { findSessions } from '../capture/discover.js';
 import { runCapture } from '../capture/worker.js';
 import { CAPTURE, DEFAULTS } from '../config.js';
@@ -15,13 +16,14 @@ import { dataDir, paths } from '../paths.js';
 import { standupPrompt } from '../prompt.js';
 import { readState, updateState, workRepos } from '../state.js';
 import { collect, render } from './materials.js';
+import { addNote, NOTE_MAX_CHARS, readNotes, removeNotes } from './notes.js';
 import { localDate, periodFrom } from './schedule.js';
 import { REPO_ID_RE, writeDigest } from '../store.js';
 
 const H = 3_600_000;
 const partsFile = () => join(dataDir(), 'standup-materials.json');
 
-export async function standupCommand(args: string[], pluginRoot: string, now = new Date()): Promise<{ code: number; out: string }> {
+export async function standupCommand(args: string[], pluginRoot: string, now = new Date(), cwd = process.cwd()): Promise<{ code: number; out: string }> {
   const [sub, ...rest] = args;
   switch (sub) {
     case 'prepare':
@@ -38,9 +40,75 @@ export async function standupCommand(args: string[], pluginRoot: string, now = n
       enqueueEvent(type, now);
       return { code: 0, out: 'ok' };
     }
+    case 'status':
+      return status(now);
+    case 'note':
+      return note(rest, now, cwd);
+    case 'addendum':
+      return addendum(rest.join(' '), now);
     default:
-      return { code: 1, out: "usage: standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker" };
+      return {
+        code: 1,
+        out: "usage: standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker | status | note add '<text>' | note list | note rm <n>… | addendum '<json>'",
+      };
   }
+}
+
+/** What the /standup menu needs: is today's standup sent (then it can be added to), how many notes wait. */
+function status(now: Date): { code: number; out: string } {
+  const st = readState().standup ?? {};
+  const sentToday = st.done_date === localDate(now) && !!st.sent_report_id;
+  return { code: 0, out: JSON.stringify({ joined: memberToken() !== null, sent_today: sentToday, notes: readNotes().length }, null, 2) };
+}
+
+/** `note add '<text>'` (secrets filtered, branch and ticket attached in a work repo) | `note list` | `note rm <n|id>…`. */
+function note(args: string[], now: Date, cwd: string): { code: number; out: string } {
+  const [sub, ...rest] = args;
+  if (sub === 'add') {
+    const r = addNote(rest.join(' '), cwd, now);
+    if (typeof r === 'string') return { code: 1, out: r };
+    log('info', 'standup: note added', { ticket: !!r.note.ticket, branch: !!r.note.branch, redacted: r.redacted });
+    const where = r.note.ticket ?? r.note.branch;
+    return {
+      code: 0,
+      out: `Note saved${where ? ` (${where})` : ''}: it goes into your next standup and reaches your manager only when you send it.${r.redacted ? ` ${r.redacted} secret(s) were masked.` : ''}`,
+    };
+  }
+  if (sub === 'list') {
+    const notes = readNotes().map((n, i) => ({ n: i + 1, text: n.text, ticket: n.ticket ?? null, branch: n.branch ?? null, written: n.ts }));
+    return { code: 0, out: JSON.stringify({ notes, note: notes.length ? 'They go into your next standup; sending it clears them.' : 'No notes.' }, null, 2) };
+  }
+  if (sub === 'rm' && rest.length > 0) {
+    const removed = removeNotes(rest);
+    return { code: removed ? 0 : 1, out: removed ? `Deleted: ${removed}. Left: ${readNotes().length}.` : 'No such notes — see standup note list.' };
+  }
+  return { code: 1, out: "usage: standup note add '<text>' | note list | note rm <n|id>…" };
+}
+
+/**
+ * Add to today's sent standup: what happened after it was sent. Goes to the manager's next update.
+ * The developer confirms the text before this runs.
+ */
+async function addendum(json: string, now: Date): Promise<{ code: number; out: string }> {
+  let input: { text?: unknown; ticket?: unknown };
+  try {
+    input = JSON.parse(json) as typeof input;
+  } catch {
+    return { code: 1, out: 'The argument must be JSON {text, ticket} in single quotes (replace apostrophes inside with ’).' };
+  }
+  const text = str(input.text);
+  if (!text) return { code: 1, out: 'text is required — the addition exactly as the developer confirmed it' };
+  if (text.length > NOTE_MAX_CHARS) return { code: 1, out: `The addition is too long (at most ${NOTE_MAX_CHARS} characters).` };
+  const st = readState().standup ?? {};
+  if (st.done_date !== localDate(now) || !st.sent_report_id) {
+    return { code: 1, out: 'Today’s standup isn’t sent yet — save this as a note instead: standup note add.' };
+  }
+  enqueueAddendum(st.sent_report_id, { id: randomUUID(), text, ticket: str(input.ticket) });
+  enqueueEvent('amended', now);
+  const r = await flush(now.getTime());
+  log('info', 'standup: addendum', { delivered: r.left === 0, stopped: r.stopped });
+  if (r.left === 0) return { code: 0, out: 'Added to today’s standup: your manager will see it in the next update.' };
+  return { code: 0, out: 'Saved, but the server is unreachable right now — it will be sent automatically next time Claude Code starts.' };
 }
 
 /**
@@ -80,7 +148,7 @@ async function prepare(args: string[], pluginRoot: string, now: Date): Promise<{
     updateState((s) => {
       s.standup = {
         ...s.standup,
-        pending: { from: from.toISOString(), to: now.toISOString(), prompt_version: prompt.version },
+        pending: { from: from.toISOString(), to: now.toISOString(), prompt_version: prompt.version, note_ids: readNotes().map((n) => n.id) },
         showing_until: new Date(now.getTime() + DEFAULTS.showLockMinutes * 60_000).toISOString(),
         // No answer (the user went straight to an emergency) = ask again later, like «Not now».
         snooze_until: new Date(now.getTime() + DEFAULTS.snoozeHours * H).toISOString(),
@@ -141,8 +209,10 @@ async function send(json: string, now: Date): Promise<{ code: number; out: strin
   // even if the network is down now; the queue delivers it later.
   updateState((s) => {
     s.last_checkin = report.period.to;
-    s.standup = { done_date: localDate(now) };
+    s.standup = { done_date: localDate(now), sent_report_id: report.id };
   });
+  // The notes it was built from are in the standup now; notes written while it was shown stay.
+  if (pending.note_ids?.length) removeNotes(pending.note_ids);
   const r = await flush(now.getTime());
   log('info', 'standup: sent', { items: report.items.length, blockers: report.blockers.length, delivered: r.left === 0, stopped: r.stopped });
   if (r.left === 0) return { code: 0, out: 'Sent to your manager.' };

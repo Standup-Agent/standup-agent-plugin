@@ -23,7 +23,7 @@ __export(cli_exports, {
   main: () => main
 });
 module.exports = __toCommonJS(cli_exports);
-var import_node_path18 = require("node:path");
+var import_node_path19 = require("node:path");
 
 // src/capture/worker.ts
 var import_node_fs6 = require("node:fs");
@@ -1053,6 +1053,9 @@ function apiBaseUrl() {
 function enqueueReport(report) {
   return enqueue({ kind: "report", body: report });
 }
+function enqueueAddendum(reportId, addendum2) {
+  return enqueue({ kind: "addendum", report_id: reportId, body: addendum2 });
+}
 function enqueueEvent(type, now = /* @__PURE__ */ new Date()) {
   return enqueue({ kind: "event", body: { type, ts: now.toISOString() } });
 }
@@ -1083,14 +1086,15 @@ async function flush(now = Date.now()) {
       res.left--;
       continue;
     }
-    const status = await post(item.kind === "report" ? "/reports" : "/events", item.body, token);
-    if (status === null) return { ...res, stopped: "network" };
-    if (status === 401) return { ...res, stopped: "auth" };
-    if (status >= 500) return { ...res, stopped: "network" };
-    if (status >= 400) log("error", "queue: item rejected", { kind: item.kind, status });
+    const path = item.kind === "report" ? "/reports" : item.kind === "addendum" ? `/reports/${encodeURIComponent(item.report_id)}/addendum` : "/events";
+    const status2 = await post(path, item.body, token);
+    if (status2 === null) return { ...res, stopped: "network" };
+    if (status2 === 401) return { ...res, stopped: "auth" };
+    if (status2 >= 500) return { ...res, stopped: "network" };
+    if (status2 >= 400) log("error", "queue: item rejected", { kind: item.kind, status: status2 });
     (0, import_node_fs7.rmSync)(file, { force: true });
     res.left--;
-    if (status < 400) res.sent++;
+    if (status2 < 400) res.sent++;
   }
   return res;
 }
@@ -1371,6 +1375,9 @@ function parseInvite(link) {
   if (/^[A-Za-z0-9]{10,}$/.test(s)) return { code: s.toUpperCase(), apiBase: process.env.STANDUP_AGENT_API_URL ?? DEFAULT_API_BASE };
   return null;
 }
+function privacyUrl(apiBase) {
+  return apiBase.replace(/\/api\/?$/, "") + "/privacy";
+}
 async function request(url, init = {}) {
   try {
     const r = await fetch(url, { ...init, signal: AbortSignal.timeout(NET.timeoutMs) });
@@ -1393,6 +1400,8 @@ async function joinInfo(link) {
     out: {
       team_name: r.body.team_name,
       suggested: suggestIdentity(),
+      // Shown under the privacy message before the developer confirms (card 4b).
+      privacy_url: privacyUrl(inv.apiBase),
       // MVP: one team per developer; joining another one leaves the current.
       current_team: current,
       leaves_current_team: current !== null && current !== r.body.team_name
@@ -1433,7 +1442,7 @@ async function leave() {
       return { code: 1, out: { error: "Can\u2019t reach the server \u2014 nothing was deleted there. Try again later; nothing local was touched." } };
     }
   }
-  for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), (0, import_node_path13.join)(dataDir(), "standup-materials.json"), paths.state()]) {
+  for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), (0, import_node_path13.join)(dataDir(), "standup-materials.json"), (0, import_node_path13.join)(dataDir(), "notes.jsonl"), paths.state()]) {
     (0, import_node_fs11.rmSync)(p, { recursive: true, force: true });
   }
   log("info", "team: left");
@@ -1441,9 +1450,9 @@ async function leave() {
 }
 
 // src/standup/commands.ts
-var import_node_crypto3 = require("node:crypto");
-var import_node_fs14 = require("node:fs");
-var import_node_path16 = require("node:path");
+var import_node_crypto4 = require("node:crypto");
+var import_node_fs15 = require("node:fs");
+var import_node_path17 = require("node:path");
 
 // src/prompt.ts
 var import_node_fs12 = require("node:fs");
@@ -1474,18 +1483,77 @@ function readCache() {
 
 // src/standup/materials.ts
 var import_node_child_process4 = require("node:child_process");
+var import_node_fs14 = require("node:fs");
+var import_node_path16 = require("node:path");
+
+// src/standup/notes.ts
+var import_node_crypto3 = require("node:crypto");
 var import_node_fs13 = require("node:fs");
 var import_node_path15 = require("node:path");
+var NOTE_MAX_CHARS = 2e3;
+var notesFile = () => (0, import_node_path15.join)(dataDir(), "notes.jsonl");
+function readNotes() {
+  let raw;
+  try {
+    raw = (0, import_node_fs13.readFileSync)(notesFile(), "utf8");
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const n = JSON.parse(line);
+      if (typeof n.id === "string" && typeof n.text === "string") out.push(n);
+    } catch {
+    }
+  }
+  return out;
+}
+function writeNotes(notes) {
+  writeFileAtomic(notesFile(), notes.map((n) => JSON.stringify(n) + "\n").join(""));
+}
+function addNote(text, cwd, now = /* @__PURE__ */ new Date()) {
+  const trimmed = text.trim();
+  if (!trimmed) return "The note is empty.";
+  if (trimmed.length > NOTE_MAX_CHARS) return `The note is too long (${trimmed.length} characters, at most ${NOTE_MAX_CHARS}): keep it to a line or two.`;
+  const { text: clean, found } = redactSecrets(trimmed);
+  const note2 = { id: (0, import_node_crypto3.randomUUID)(), text: clean, ts: now.toISOString() };
+  const repo = repoOf(cwd);
+  let branch = null;
+  if (repo && isWorkRepo(repo.path, readState())) {
+    branch = currentBranch(cwd);
+    note2.repo = repo.name;
+    note2.repo_path = repo.path;
+    if (branch) note2.branch = branch;
+  }
+  const ticket = findTickets(clean)[0] ?? (branch ? findTickets(branch)[0] : void 0);
+  if (ticket) note2.ticket = ticket;
+  writeNotes([...readNotes(), note2]);
+  return { note: note2, redacted: Object.values(found).reduce((a, b) => a + b, 0) };
+}
+function removeNotes(refs) {
+  const notes = readNotes();
+  const drop = /* @__PURE__ */ new Set();
+  for (const ref of refs) {
+    const n = /^\d+$/.test(ref) ? notes[Number(ref) - 1] : notes.find((x) => x.id === ref);
+    if (n) drop.add(n.id);
+  }
+  if (drop.size > 0) writeNotes(notes.filter((n) => !drop.has(n.id)));
+  return drop.size;
+}
+
+// src/standup/materials.ts
 var PART_BYTES = 24e3;
 function rawFilesSince(fromMs) {
   const out = [];
   for (const repo of dirs(paths.digests())) {
-    for (const branch of dirs((0, import_node_path15.join)(paths.digests(), repo))) {
-      const raw = (0, import_node_path15.join)(paths.digests(), repo, branch, "raw");
+    for (const branch of dirs((0, import_node_path16.join)(paths.digests(), repo))) {
+      const raw = (0, import_node_path16.join)(paths.digests(), repo, branch, "raw");
       for (const f of files(raw)) {
         if (!f.endsWith(".json")) continue;
         try {
-          if ((0, import_node_fs13.statSync)((0, import_node_path15.join)(raw, f)).mtimeMs > fromMs) out.push((0, import_node_path15.join)(raw, f));
+          if ((0, import_node_fs14.statSync)((0, import_node_path16.join)(raw, f)).mtimeMs > fromMs) out.push((0, import_node_path16.join)(raw, f));
         } catch {
         }
       }
@@ -1497,7 +1565,7 @@ function loadCaptures(fromMs) {
   const caps = [];
   for (const f of rawFilesSince(fromMs)) {
     try {
-      caps.push(JSON.parse((0, import_node_fs13.readFileSync)(f, "utf8")));
+      caps.push(JSON.parse((0, import_node_fs14.readFileSync)(f, "utf8")));
     } catch {
     }
   }
@@ -1524,7 +1592,7 @@ function outsideCommits(repos, from, known, limitPerRepo = CAPTURE.maxCommitsPer
     for (const rec of (log2 ?? "").split("")) {
       const [sha, ref, ts, subject] = rec.trim().split("");
       if (!sha || !ts || known.has(sha)) continue;
-      out.push({ repo: (0, import_node_path15.basename)(repo), repoPath: repo, branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
+      out.push({ repo: (0, import_node_path16.basename)(repo), repoPath: repo, branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
       if (++n >= limitPerRepo) break;
     }
   }
@@ -1533,7 +1601,7 @@ function outsideCommits(repos, from, known, limitPerRepo = CAPTURE.maxCommitsPer
 function collect(from, to, workRepos2) {
   const captures = loadCaptures(from.getTime());
   const known = new Set(captures.flatMap((c) => c.commits.map((k) => k.sha)));
-  return { from: from.toISOString(), to: to.toISOString(), captures, outside: outsideCommits(workRepos2, from, known) };
+  return { from: from.toISOString(), to: to.toISOString(), captures, outside: outsideCommits(workRepos2, from, known), notes: readNotes() };
 }
 function devLanguage(captures) {
   let cyr = 0;
@@ -1557,13 +1625,18 @@ function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
     const repoId = repoKey(repoPath);
     const k = `${repoId}\0${branch}`;
     let b = branches.get(k);
-    if (!b) branches.set(k, b = { repo, repoId, branch, caps: [], outside: [] });
+    if (!b) branches.set(k, b = { repo, repoId, branch, caps: [], outside: [], notes: [] });
     return b;
   };
   for (const c of m.captures) get(c.repo.name, c.repo.path, c.branch).caps.push(c);
   for (const k of m.outside) get(k.repo, k.repoPath, k.branch || "HEAD").outside.push(k);
+  const loose = [];
+  for (const n of m.notes ?? []) {
+    if (n.repo && n.repo_path && n.branch) get(n.repo, n.repo_path, n.branch).notes.push(n);
+    else loose.push(n);
+  }
   for (const b of branches.values()) {
-    const tickets = [...new Set(b.caps.flatMap((c) => c.tickets))];
+    const tickets = [.../* @__PURE__ */ new Set([...b.caps.flatMap((c) => c.tickets), ...b.notes.flatMap((n) => n.ticket ? [n.ticket] : [])])];
     body.push(`## repo: ${b.repo} \xB7 repo_id: ${b.repoId} \xB7 branch: ${b.branch}${tickets.length ? ` \xB7 ticket: ${tickets.join(", ")}` : ""}`);
     const digest = readDigest(b.repoId, b.branch).trim();
     body.push("existing_digest:", digest || "(empty)", "", "raw entries:");
@@ -1582,11 +1655,14 @@ function render(m, prompt, maxChars = DEFAULTS.synthMaxChars) {
       body.push("commits_outside_sessions:");
       for (const k of b.outside) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message}`);
     }
+    if (b.notes.length) body.push("developer_notes:", ...b.notes.map(noteLine));
     body.push("");
   }
+  if (loose.length) body.push("## developer_notes without a branch", ...loose.map(noteLine), "");
   if (body.length === 0) body.push("No work found since the last standup.");
   return split([...head, ...body]);
 }
+var noteLine = (n) => `- ${n.ts.slice(0, 16)}${n.ticket ? ` [${n.ticket}]` : ""} ${n.text.replace(/\s*\n\s*/g, " ")}`;
 var OMITTED = "\u2026 (part of the conversation omitted)";
 var CUT = "\u2026[cut]";
 var CHARS = { size: (t) => t.length, cut: (t, max) => t.slice(0, Math.max(0, max - CUT.length)) + CUT };
@@ -1646,14 +1722,14 @@ function git2(cwd, args) {
 }
 var dirs = (d) => {
   try {
-    return (0, import_node_fs13.readdirSync)(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    return (0, import_node_fs14.readdirSync)(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {
     return [];
   }
 };
 var files = (d) => {
   try {
-    return (0, import_node_fs13.readdirSync)(d);
+    return (0, import_node_fs14.readdirSync)(d);
   } catch {
     return [];
   }
@@ -1661,8 +1737,8 @@ var files = (d) => {
 
 // src/standup/commands.ts
 var H = 36e5;
-var partsFile = () => (0, import_node_path16.join)(dataDir(), "standup-materials.json");
-async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date()) {
+var partsFile = () => (0, import_node_path17.join)(dataDir(), "standup-materials.json");
+async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date(), cwd = process.cwd()) {
   const [sub, ...rest] = args;
   switch (sub) {
     case "prepare":
@@ -1679,9 +1755,66 @@ async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date()
       enqueueEvent(type, now);
       return { code: 0, out: "ok" };
     }
+    case "status":
+      return status(now);
+    case "note":
+      return note(rest, now, cwd);
+    case "addendum":
+      return addendum(rest.join(" "), now);
     default:
-      return { code: 1, out: "usage: standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker" };
+      return {
+        code: 1,
+        out: "usage: standup prepare [--part N] | send '<json>' | save-digests '<json>' | snooze | event edited|blocker | status | note add '<text>' | note list | note rm <n>\u2026 | addendum '<json>'"
+      };
   }
+}
+function status(now) {
+  const st = readState().standup ?? {};
+  const sentToday = st.done_date === localDate(now) && !!st.sent_report_id;
+  return { code: 0, out: JSON.stringify({ joined: memberToken() !== null, sent_today: sentToday, notes: readNotes().length }, null, 2) };
+}
+function note(args, now, cwd) {
+  const [sub, ...rest] = args;
+  if (sub === "add") {
+    const r = addNote(rest.join(" "), cwd, now);
+    if (typeof r === "string") return { code: 1, out: r };
+    log("info", "standup: note added", { ticket: !!r.note.ticket, branch: !!r.note.branch, redacted: r.redacted });
+    const where = r.note.ticket ?? r.note.branch;
+    return {
+      code: 0,
+      out: `Note saved${where ? ` (${where})` : ""}: it goes into your next standup and reaches your manager only when you send it.${r.redacted ? ` ${r.redacted} secret(s) were masked.` : ""}`
+    };
+  }
+  if (sub === "list") {
+    const notes = readNotes().map((n, i) => ({ n: i + 1, text: n.text, ticket: n.ticket ?? null, branch: n.branch ?? null, written: n.ts }));
+    return { code: 0, out: JSON.stringify({ notes, note: notes.length ? "They go into your next standup; sending it clears them." : "No notes." }, null, 2) };
+  }
+  if (sub === "rm" && rest.length > 0) {
+    const removed = removeNotes(rest);
+    return { code: removed ? 0 : 1, out: removed ? `Deleted: ${removed}. Left: ${readNotes().length}.` : "No such notes \u2014 see standup note list." };
+  }
+  return { code: 1, out: "usage: standup note add '<text>' | note list | note rm <n|id>\u2026" };
+}
+async function addendum(json, now) {
+  let input;
+  try {
+    input = JSON.parse(json);
+  } catch {
+    return { code: 1, out: "The argument must be JSON {text, ticket} in single quotes (replace apostrophes inside with \u2019)." };
+  }
+  const text = str2(input.text);
+  if (!text) return { code: 1, out: "text is required \u2014 the addition exactly as the developer confirmed it" };
+  if (text.length > NOTE_MAX_CHARS) return { code: 1, out: `The addition is too long (at most ${NOTE_MAX_CHARS} characters).` };
+  const st = readState().standup ?? {};
+  if (st.done_date !== localDate(now) || !st.sent_report_id) {
+    return { code: 1, out: "Today\u2019s standup isn\u2019t sent yet \u2014 save this as a note instead: standup note add." };
+  }
+  enqueueAddendum(st.sent_report_id, { id: (0, import_node_crypto4.randomUUID)(), text, ticket: str2(input.ticket) });
+  enqueueEvent("amended", now);
+  const r = await flush(now.getTime());
+  log("info", "standup: addendum", { delivered: r.left === 0, stopped: r.stopped });
+  if (r.left === 0) return { code: 0, out: "Added to today\u2019s standup: your manager will see it in the next update." };
+  return { code: 0, out: "Saved, but the server is unreachable right now \u2014 it will be sent automatically next time Claude Code starts." };
 }
 async function captureFresh(from) {
   const state = readState();
@@ -1710,7 +1843,7 @@ async function prepare(args, pluginRoot, now) {
     updateState((s) => {
       s.standup = {
         ...s.standup,
-        pending: { from: from.toISOString(), to: now.toISOString(), prompt_version: prompt.version },
+        pending: { from: from.toISOString(), to: now.toISOString(), prompt_version: prompt.version, note_ids: readNotes().map((n) => n.id) },
         showing_until: new Date(now.getTime() + DEFAULTS.showLockMinutes * 6e4).toISOString(),
         // No answer (the user went straight to an emergency) = ask again later, like «Not now».
         snooze_until: new Date(now.getTime() + DEFAULTS.snoozeHours * H).toISOString()
@@ -1719,7 +1852,7 @@ async function prepare(args, pluginRoot, now) {
     enqueueEvent("shown", now);
   } else {
     try {
-      parts = JSON.parse((0, import_node_fs14.readFileSync)(partsFile(), "utf8"));
+      parts = JSON.parse((0, import_node_fs15.readFileSync)(partsFile(), "utf8"));
     } catch {
       return { code: 1, out: "No prepared materials: run standup prepare without --part first." };
     }
@@ -1742,7 +1875,7 @@ function buildReport(input, pending, now) {
     items.push({ ticket: str2(i.ticket), branch: str2(i.branch), done, why: str2(i.why), next: str2(i.next) });
   }
   const blockers = Array.isArray(input.blockers) ? input.blockers.map(str2).filter((b) => b !== null) : [];
-  return { id: (0, import_node_crypto3.randomUUID)(), date: localDate(now), period: { from: pending.from, to: pending.to }, items, blockers, text, prompt_version: pending.prompt_version };
+  return { id: (0, import_node_crypto4.randomUUID)(), date: localDate(now), period: { from: pending.from, to: pending.to }, items, blockers, text, prompt_version: pending.prompt_version };
 }
 async function send(json, now) {
   let input;
@@ -1759,8 +1892,9 @@ async function send(json, now) {
   enqueueEvent("sent", now);
   updateState((s) => {
     s.last_checkin = report.period.to;
-    s.standup = { done_date: localDate(now) };
+    s.standup = { done_date: localDate(now), sent_report_id: report.id };
   });
+  if (pending.note_ids?.length) removeNotes(pending.note_ids);
   const r = await flush(now.getTime());
   log("info", "standup: sent", { items: report.items.length, blockers: report.blockers.length, delivered: r.left === 0, stopped: r.stopped });
   if (r.left === 0) return { code: 0, out: "Sent to your manager." };
@@ -1830,9 +1964,9 @@ function sessionEnd(input, cliPath) {
 }
 
 // src/hooks/session-start.ts
-var import_node_path17 = require("node:path");
+var import_node_path18 = require("node:path");
 var import_node_child_process6 = require("node:child_process");
-var import_node_fs15 = require("node:fs");
+var import_node_fs16 = require("node:fs");
 function sessionStart(input, cliPath, now = /* @__PURE__ */ new Date()) {
   const outs = [];
   try {
@@ -1862,7 +1996,7 @@ function standupCheck(input, now, state = readState()) {
   const repos = workRepos(state);
   if (repos.length === 0 || gate(state, now) !== "ok") return null;
   const from = periodFrom(state, now);
-  const hasWork = rawFilesSince(from.getTime()).length > 0 || outsideCommits(repos, from, /* @__PURE__ */ new Set(), 1).length > 0;
+  const hasWork = readNotes().length > 0 || rawFilesSince(from.getTime()).length > 0 || outsideCommits(repos, from, /* @__PURE__ */ new Set(), 1).length > 0;
   if (!hasWork) {
     const today = localDate(now);
     if (state.standup?.no_work_date !== today) {
@@ -1887,7 +2021,7 @@ Talk to the user in their language.`
 }
 function queueNotEmpty() {
   try {
-    return (0, import_node_fs15.readdirSync)(paths.queue()).some((f) => f.endsWith(".json") && !f.startsWith("."));
+    return (0, import_node_fs16.readdirSync)(paths.queue()).some((f) => f.endsWith(".json") && !f.startsWith("."));
   } catch {
     return false;
   }
@@ -1914,7 +2048,7 @@ function findMissedSessions(input, now = Date.now()) {
   });
 }
 function projectsDirFor(input) {
-  return input.transcript_path ? (0, import_node_path17.dirname)((0, import_node_path17.dirname)(input.transcript_path)) : paths.claudeProjects();
+  return input.transcript_path ? (0, import_node_path18.dirname)((0, import_node_path18.dirname)(input.transcript_path)) : paths.claudeProjects();
 }
 function newRepoCheck(input, cliPath, state = readState(), now = Date.now()) {
   if (!state.team) return null;
@@ -1990,7 +2124,7 @@ async function main(argv) {
         return code;
       }
       case "standup": {
-        const { code, out } = await standupCommand(argv.slice(1), (0, import_node_path18.dirname)((0, import_node_path18.dirname)(cliPath)));
+        const { code, out } = await standupCommand(argv.slice(1), (0, import_node_path19.dirname)((0, import_node_path19.dirname)(cliPath)));
         process.stdout.write(out + "\n");
         return code;
       }

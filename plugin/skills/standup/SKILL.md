@@ -1,7 +1,7 @@
 ---
 name: standup
-description: Standup Agent — joining a team, the developer's morning standup, and which repos go into it. Use when the user asks to join a Standup Agent team or sends a link like …/join/<CODE>; on /standup (show the standup now), /standup repos, /standup leave, "which repos are in my standup", "turn repo X off/on in my standup", "this is a personal project, keep it out of my standup", and when the Standup Agent hook asks to show the standup.
-argument-hint: "[show | join <link> | leave | repos [scan] | repos set <path>=work|personal]"
+description: Standup Agent — joining a team, the developer's morning standup, notes for it, and which repos go into it. Use when the user asks to join a Standup Agent team or sends a link like …/join/<CODE>; on /standup (the menu), /standup show, /standup <text> (a note), /standup notes, /standup repos, /standup leave; "write down for my standup: …", "add to today's standup: …", "what's in my standup notes", "which repos are in my standup", "turn repo X off/on in my standup", "this is a personal project, keep it out of my standup"; and when the Standup Agent hook asks to show the standup.
+argument-hint: "[show | <note text> | notes | join <link> | leave | repos [scan] | repos set <path>=work|personal]"
 allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js *)
 ---
 
@@ -17,12 +17,56 @@ Below, `CLI` means exactly `node ${CLAUDE_PLUGIN_ROOT}/dist/cli.js --data ${CLAU
 Talk to the user in their language — the one they write to you in. The quoted texts below (questions, headers, button labels and descriptions, confirmations) are English templates: say them in the user's language. The same goes for what the CLI prints (`note`, status lines): relay it in the user's language, don't paste it verbatim. Don't translate `standup.text` and `blocker_hint`: they're already in the developer's language.
 
 What to do, by arguments:
-- no arguments or `show` → "Standup";
+- no arguments → "Menu";
+- `show` → "Standup";
+- `notes` → "My notes";
+- `continue` → carry on from where you were (see the sections below);
 - `join <link>`, or an invite link `…/join/<CODE>` in the user's message → "Joining a team";
 - `leave` → "Leaving the team";
 - `repos set …` → run `CLI repos set …` with the same arguments and confirm in one line;
 - `repos scan` → "Initial repo marking";
-- `repos` → "Viewing and changing repo marking".
+- `repos` → "Viewing and changing repo marking";
+- any other text (`/standup had a call with design: the banner moves to Friday`), or the user asks in words to write something down for the standup or add it to today's standup → "Quick note" with that text.
+
+## Menu (`/standup` without arguments)
+
+1. `CLI standup status` → `{joined, sent_today, notes}`. If `joined` is false, say in one line that they need to join a team first with the invite link from their manager, and stop.
+2. Call AskUserQuestion, header "Standup", question "What do you want to do?". Options:
+   - `sent_today` is false:
+     - "Show the standup now" — "Build it, show it, send it in one tap";
+     - "Note for the standup" — "A call, a review, a decision — goes into the next standup";
+     - "My notes" — "<notes> waiting" (if `notes` is 0: "No notes yet").
+   - `sent_today` is true:
+     - "Add to today's standup" — "Your manager sees it in the next update";
+     - "Note for tomorrow" — "Goes into tomorrow's standup";
+     - "My notes" — as above.
+3. By answer: "Show the standup now" → "Standup"; "Note for the standup" / "Note for tomorrow" → "Note"; "Add to today's standup" → "Addition to today's standup"; "My notes" → "My notes".
+
+## Note
+
+1. If you don't have the text yet, ask in one line what to write down. The answer comes as a new message: first call the Skill tool `standup-agent:standup` with args `continue`.
+2. `CLI standup note add '<text>'` — the developer's words as they are (replace an apostrophe `'` with `’`). No LLM rewriting: don't polish, shorten or translate it.
+3. Tell the user what the command printed, in one line.
+
+## Quick note (`/standup <text>`, "write down for my standup: …")
+
+1. `CLI standup status`.
+2. `sent_today` is false → "Note" with this text, step 2. `sent_today` is true → AskUserQuestion, header "Standup", question "Where does it go?" with the text quoted under it, options: "Tomorrow's standup" — "Saved as a note for the next standup" / "Add to today's" — "Your manager sees it in the next update". Then "Note" step 2 or "Addition to today's standup" step 2.
+
+## Addition to today's standup
+
+For something that happened after today's standup was sent. It reaches the manager in their next update.
+
+1. If you don't have the text yet, ask in one line what to add (a new message → first Skill `standup-agent:standup` with args `continue`).
+2. AskUserQuestion, header "Standup", question "Add this to today's standup?", an empty line, then the text **verbatim**. Options: "Send" — "Your manager sees it in the next update" / "Edit" — "Tell me what to change".
+3. **Send** → `CLI standup addendum '{"text": "<text exactly as shown>", "ticket": "<ticket id if the text or the branch names one, else null>"}'` (single quotes; replace `'` inside with `’`). Tell the user what it printed. **Edit** → apply exactly what they say, ask again.
+4. If the command says today's standup isn't sent yet, offer to save it as a note instead ("Note", step 2).
+
+## My notes (`/standup notes`)
+
+1. `CLI standup note list`. No notes → say so in one line.
+2. Show them as a numbered list (text; ticket or branch in brackets if set). Say they go into the next standup and sending it clears them.
+3. Offer to delete: up to 4 notes — AskUserQuestion with `multiSelect: true`, header "Notes", question "Delete any of them?", an option per note (label — the start of its text, description — ticket or branch); more than 4 — ask for the numbers in text. Nothing chosen → leave them. Then `CLI standup note rm <n> <n> …` with the numbers from the list (numbers in a separate message → first Skill `standup-agent:standup` with args `continue`; run `note list` again before `rm`, the numbers may have shifted).
 
 ## Standup
 
@@ -39,16 +83,26 @@ What to do, by arguments:
    - **⚠️ Add a blocker** → ask in one sentence what's in the way (if there was a 💡 hint, offer its wording). Append a line `⚠️ <blocker>` to the text and add it to `blockers`, drop the hint, run `CLI standup event blocker`, then ask the question again with the updated text inside.
    - **Not now** → `CLI standup snooze`, tell the user what it printed.
    - The user ignored the question and asked for something else — just do what they asked.
-5. If the user sent the edit or the blocker **as a separate message**, the command permission has already been reset by then: first call the Skill tool `standup-agent:standup` again with args `continue`, then carry on from the same place (edit → show → question). `continue` resumes the current standup; don't call `synth` again.
-6. After the answer, move on to the user's original request, if there was one.
+5. Notes the developer wrote down (`/standup <text>`) are already in the draft; sending it clears them, "Not now" keeps them.
+6. If the user sent the edit or the blocker **as a separate message**, the command permission has already been reset by then: first call the Skill tool `standup-agent:standup` again with args `continue`, then carry on from the same place (edit → show → question). `continue` resumes the current standup; don't call `synth` again.
+7. After the answer, move on to the user's original request, if there was one.
 
 ## Joining a team
 
 1. `CLI join-info '<the whole link>'`. On error, show it in one line and stop.
-2. Call AskUserQuestion: question "Joining team <team_name> as <name> (<email>) — correct?" — name and email from `suggested` (if they're missing, ask in text). Add a line to the question: "Your manager only sees standups you confirm. Code, chats and personal repos never leave your computer." If `leaves_current_team`, add: "You'll leave the team <current_team>." header "Team", options: "Yes, join" and "Change name or email".
+2. Before asking anything, show this message — in the user's language, translated faithfully: all three points, nothing softened or added. The privacy link goes small under it (`privacy_url`):
+
+   > **Your standup, your call**
+   > • Drafted on your computer from work repos only. Code and chats never leave it.
+   > • Nothing reaches your team until you confirm.
+   > • We store only the standups you send. Leave anytime with `/standup leave`.
+   >
+   > <sub>Privacy policy: <privacy_url></sub>
+
+   Then call AskUserQuestion: question "Joining team <team_name> as <name> (<email>) — correct?" — name and email from `suggested` (if they're missing, ask in text). If `leaves_current_team`, add a line: "You'll leave the team <current_team>." header "Team", options: "Yes, join" and "Change name or email".
 3. "Change…" → ask what to change (a new message → first Skill `standup-agent:standup` with args `continue`).
 4. `CLI join '<link>' '<name>' '<email>'` (replace an apostrophe in the name with ’). The answer has `team_name`, `work_orgs`.
-5. Go straight to "Initial repo marking" below.
+5. Go straight to "Initial repo marking" below. When it's done, offer the first standup right away: AskUserQuestion, header "Standup", question "Show your standup for the last days now?", options "Show it" — "Build it from the last 3 days" / "Later" — "Tomorrow morning in your first session". "Show it" → "Standup" (the sessions are still being picked up in the background: if it says there's no work, say it'll be there tomorrow morning).
 
 ## Leaving the team (`/standup leave`)
 

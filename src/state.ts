@@ -52,8 +52,13 @@ export interface StandupState {
   showing_until?: string;
   /** The `no_work` event was already sent for this date. */
   no_work_date?: string;
-  /** Period and prompt of the standup being shown, so `send` doesn't depend on Claude echoing them. */
-  pending?: { from: string; to: string; prompt_version: string };
+  /**
+   * Period and prompt of the standup being shown, so `send` doesn't depend on Claude echoing them;
+   * note_ids — the developer's notes in its materials, removed once it is sent.
+   */
+  pending?: { from: string; to: string; prompt_version: string; note_ids?: string[] };
+  /** Id of the standup sent on `done_date`: an addendum goes to it (card 2a). */
+  sent_report_id?: string;
 }
 
 export function readState(): State {
