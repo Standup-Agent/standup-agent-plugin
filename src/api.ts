@@ -1,5 +1,6 @@
 /**
- * Everything that leaves the machine goes through here: confirmed standups and text-less events.
+ * Everything that leaves the machine goes through here: confirmed standups, confirmed addenda to
+ * them, and text-less events.
  * Each item is written to the local queue first, then sent; failures stay queued and are retried
  * by `flush` on the next session start. Without a member_token (not joined yet) items just wait.
  */
@@ -11,7 +12,7 @@ import { writeFileAtomic } from './fsutil.js';
 import { log } from './log.js';
 import { paths } from './paths.js';
 
-export type EventType = 'shown' | 'sent' | 'edited' | 'blocker' | 'snoozed' | 'skipped' | 'no_work';
+export type EventType = 'shown' | 'sent' | 'edited' | 'blocker' | 'snoozed' | 'skipped' | 'no_work' | 'amended';
 
 export interface ReportItem {
   ticket: string | null;
@@ -31,7 +32,17 @@ export interface Report {
   prompt_version: string;
 }
 
-type QueueItem = { kind: 'report'; body: Report } | { kind: 'event'; body: { type: EventType; ts: string } };
+/** What the developer added to a sent standup (card 2a). The id makes a retry idempotent. */
+export interface Addendum {
+  id: string;
+  text: string;
+  ticket: string | null;
+}
+
+type QueueItem =
+  | { kind: 'report'; body: Report }
+  | { kind: 'addendum'; report_id: string; body: Addendum }
+  | { kind: 'event'; body: { type: EventType; ts: string } };
 
 /** auth.json: written at join. Never logged or copied. */
 export interface Auth {
@@ -62,6 +73,10 @@ export function apiBaseUrl(): string {
 /** Queue a report; returns its queue file. The report id makes a retry idempotent on the server. */
 export function enqueueReport(report: Report): string {
   return enqueue({ kind: 'report', body: report });
+}
+
+export function enqueueAddendum(reportId: string, addendum: Addendum): string {
+  return enqueue({ kind: 'addendum', report_id: reportId, body: addendum });
 }
 
 export function enqueueEvent(type: EventType, now = new Date()): string {
@@ -107,7 +122,8 @@ export async function flush(now = Date.now()): Promise<FlushResult> {
       res.left--;
       continue;
     }
-    const status = await post(item.kind === 'report' ? '/reports' : '/events', item.body, token);
+    const path = item.kind === 'report' ? '/reports' : item.kind === 'addendum' ? `/reports/${encodeURIComponent(item.report_id)}/addendum` : '/events';
+    const status = await post(path, item.body, token);
     if (status === null) return { ...res, stopped: 'network' };
     if (status === 401) return { ...res, stopped: 'auth' };
     if (status >= 500) return { ...res, stopped: 'network' };

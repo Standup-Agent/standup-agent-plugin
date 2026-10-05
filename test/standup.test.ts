@@ -112,7 +112,7 @@ describe('standup commands', () => {
     expect(s.out).toContain('once you join a team'); // no token yet
     const st = readState();
     expect(st.last_checkin).toBe(at(9).toISOString());
-    expect(st.standup).toEqual({ done_date: localDate(at(9, 30)) });
+    expect(st.standup).toEqual({ done_date: localDate(at(9, 30)), sent_report_id: queue().find((q) => q.kind === 'report')!.body.id });
     const report = queue().find((q) => q.kind === 'report')!.body;
     expect(report).toMatchObject({ date: localDate(at(9, 30)), period: { from: at(8, 29).toISOString(), to: at(9).toISOString() }, prompt_version: 'standup-v1', blockers: [] });
     expect(queue().filter((q) => q.kind === 'event').map((q) => q.body.type)).toEqual(['shown', 'sent']);

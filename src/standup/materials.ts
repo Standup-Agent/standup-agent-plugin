@@ -12,6 +12,7 @@ import { paths } from '../paths.js';
 import { fitTurns } from '../capture/budget.js';
 import { cutBytes } from '../capture/transcript.js';
 import { readDigest, repoKey, type RawCapture } from '../store.js';
+import { readNotes, type Note } from './notes.js';
 
 /**
  * Bash tool output above ~30 KB is saved to a file instead of shown (seen live on Cyrillic text at
@@ -24,6 +25,8 @@ export interface Materials {
   to: string;
   captures: RawCapture[];
   outside: OutsideCommit[];
+  /** The developer's notes for the next standup (card 2a): all of them, whatever the period. */
+  notes?: Note[];
 }
 
 export interface OutsideCommit {
@@ -93,7 +96,7 @@ export function outsideCommits(repos: string[], from: Date, known: Set<string>, 
 export function collect(from: Date, to: Date, workRepos: string[]): Materials {
   const captures = loadCaptures(from.getTime());
   const known = new Set(captures.flatMap((c) => c.commits.map((k) => k.sha)));
-  return { from: from.toISOString(), to: to.toISOString(), captures, outside: outsideCommits(workRepos, from, known) };
+  return { from: from.toISOString(), to: to.toISOString(), captures, outside: outsideCommits(workRepos, from, known), notes: readNotes() };
 }
 
 /** The language the developer writes in, for the prompt's dev_language: by letters in their messages. */
@@ -123,20 +126,25 @@ export function render(m: Materials, prompt: { version: string; text: string }, 
   const budgetOf = (c: RawCapture) => (total <= maxChars ? Infinity : Math.max(2_000, Math.floor((maxChars * sizeOf(c)) / total)));
 
   // Branches with new entries: from captures and from commits made outside sessions.
-  type Branch = { repo: string; repoId: string; branch: string; caps: RawCapture[]; outside: OutsideCommit[] };
+  type Branch = { repo: string; repoId: string; branch: string; caps: RawCapture[]; outside: OutsideCommit[]; notes: Note[] };
   const branches = new Map<string, Branch>();
   const get = (repo: string, repoPath: string, branch: string) => {
     const repoId = repoKey(repoPath);
     const k = `${repoId}\0${branch}`;
     let b = branches.get(k);
-    if (!b) branches.set(k, (b = { repo, repoId, branch, caps: [], outside: [] }));
+    if (!b) branches.set(k, (b = { repo, repoId, branch, caps: [], outside: [], notes: [] }));
     return b;
   };
   for (const c of m.captures) get(c.repo.name, c.repo.path, c.branch).caps.push(c);
   for (const k of m.outside) get(k.repo, k.repoPath, k.branch || 'HEAD').outside.push(k);
+  const loose: Note[] = [];
+  for (const n of m.notes ?? []) {
+    if (n.repo && n.repo_path && n.branch) get(n.repo, n.repo_path, n.branch).notes.push(n);
+    else loose.push(n);
+  }
 
   for (const b of branches.values()) {
-    const tickets = [...new Set(b.caps.flatMap((c) => c.tickets))];
+    const tickets = [...new Set([...b.caps.flatMap((c) => c.tickets), ...b.notes.flatMap((n) => (n.ticket ? [n.ticket] : []))])];
     body.push(`## repo: ${b.repo} · repo_id: ${b.repoId} · branch: ${b.branch}${tickets.length ? ` · ticket: ${tickets.join(', ')}` : ''}`);
     const digest = readDigest(b.repoId, b.branch).trim();
     body.push('existing_digest:', digest || '(empty)', '', 'raw entries:');
@@ -156,11 +164,16 @@ export function render(m: Materials, prompt: { version: string; text: string }, 
       body.push('commits_outside_sessions:');
       for (const k of b.outside) body.push(`- ${k.ts.slice(0, 16)} ${k.sha.slice(0, 7)} ${k.message}`);
     }
+    if (b.notes.length) body.push('developer_notes:', ...b.notes.map(noteLine));
     body.push('');
   }
+  if (loose.length) body.push('## developer_notes without a branch', ...loose.map(noteLine), '');
   if (body.length === 0) body.push('No work found since the last standup.');
   return split([...head, ...body]);
 }
+
+/** A note as the synthesis sees it: when, the ticket if known, the developer's own words. */
+const noteLine = (n: Note) => `- ${n.ts.slice(0, 16)}${n.ticket ? ` [${n.ticket}]` : ''} ${n.text.replace(/\s*\n\s*/g, ' ')}`;
 
 const OMITTED = '… (part of the conversation omitted)';
 const CUT = '…[cut]';

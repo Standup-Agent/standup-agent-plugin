@@ -10,6 +10,7 @@ import { log } from '../log.js';
 import { paths } from '../paths.js';
 import { matchesWorkOrg, repoOf, type Repo } from '../repos.js';
 import { outsideCommits, rawFilesSince } from '../standup/materials.js';
+import { readNotes } from '../standup/notes.js';
 import { gate, localDate, periodFrom } from '../standup/schedule.js';
 import { backfill } from '../commands/repos.js';
 import { markRepoAsked, readState, setRepoKindsWithSessions, updateState, workRepos, type State } from '../state.js';
@@ -62,7 +63,8 @@ export function standupCheck(input: HookInput, now: Date, state: State = readSta
   if (repos.length === 0 || gate(state, now) !== 'ok') return null;
 
   const from = periodFrom(state, now);
-  const hasWork = rawFilesSince(from.getTime()).length > 0 || outsideCommits(repos, from, new Set(), 1).length > 0;
+  // A note alone (a call, a review) is work for the standup too.
+  const hasWork = readNotes().length > 0 || rawFilesSince(from.getTime()).length > 0 || outsideCommits(repos, from, new Set(), 1).length > 0;
   if (!hasWork) {
     const today = localDate(now);
     if (state.standup?.no_work_date !== today) {
