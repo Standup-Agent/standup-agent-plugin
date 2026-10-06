@@ -28,7 +28,6 @@ describe('join / leave against a server', () => {
   beforeEach(async () => {
     data = tmp();
     process.env.CLAUDE_PLUGIN_DATA = data;
-    process.env.CLAUDE_CONFIG_DIR = tmp(); // no ~/.claude.json → identity falls back to git
     deleted = 0;
     server = createServer((req, res) => {
       res.setHeader('Content-Type', 'application/json');

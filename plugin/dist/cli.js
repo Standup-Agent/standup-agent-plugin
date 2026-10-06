@@ -23,7 +23,7 @@ __export(cli_exports, {
   main: () => main
 });
 module.exports = __toCommonJS(cli_exports);
-var import_node_path19 = require("node:path");
+var import_node_path18 = require("node:path");
 
 // src/capture/worker.ts
 var import_node_fs6 = require("node:fs");
@@ -1335,23 +1335,12 @@ function backfill(repos, cliPath, now, visited = {}) {
 }
 
 // src/commands/team.ts
-var import_node_fs11 = require("node:fs");
-var import_node_path13 = require("node:path");
+var import_node_fs10 = require("node:fs");
+var import_node_path12 = require("node:path");
 
 // src/identity.ts
 var import_node_child_process3 = require("node:child_process");
-var import_node_fs10 = require("node:fs");
-var import_node_os2 = require("node:os");
-var import_node_path12 = require("node:path");
 function suggestIdentity() {
-  const file = process.env.CLAUDE_CONFIG_DIR ? (0, import_node_path12.join)(process.env.CLAUDE_CONFIG_DIR, ".claude.json") : (0, import_node_path12.join)((0, import_node_os2.homedir)(), ".claude.json");
-  try {
-    const acc = JSON.parse((0, import_node_fs10.readFileSync)(file, "utf8")).oauthAccount;
-    const name2 = typeof acc?.displayName === "string" ? acc.displayName : null;
-    const email2 = typeof acc?.emailAddress === "string" ? acc.emailAddress : null;
-    if (name2 || email2) return { name: name2, email: email2, source: "claude" };
-  } catch {
-  }
   const git3 = (key) => {
     try {
       return (0, import_node_child_process3.execFileSync)("git", ["config", "--global", key], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3e3 }).trim() || null;
@@ -1442,8 +1431,8 @@ async function leave() {
       return { code: 1, out: { error: "Can\u2019t reach the server \u2014 nothing was deleted there. Try again later; nothing local was touched." } };
     }
   }
-  for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), (0, import_node_path13.join)(dataDir(), "standup-materials.json"), (0, import_node_path13.join)(dataDir(), "notes.jsonl"), paths.state()]) {
-    (0, import_node_fs11.rmSync)(p, { recursive: true, force: true });
+  for (const p of [paths.auth(), paths.digests(), paths.queue(), paths.promptCache(), (0, import_node_path12.join)(dataDir(), "standup-materials.json"), (0, import_node_path12.join)(dataDir(), "notes.jsonl"), paths.state()]) {
+    (0, import_node_fs10.rmSync)(p, { recursive: true, force: true });
   }
   log("info", "team: left");
   return { code: 0, out: { left: true, note: "You left the team. Your standups were deleted on the server, and your local materials and repo marking on this computer." } };
@@ -1451,12 +1440,12 @@ async function leave() {
 
 // src/standup/commands.ts
 var import_node_crypto4 = require("node:crypto");
-var import_node_fs15 = require("node:fs");
-var import_node_path17 = require("node:path");
+var import_node_fs14 = require("node:fs");
+var import_node_path16 = require("node:path");
 
 // src/prompt.ts
-var import_node_fs12 = require("node:fs");
-var import_node_path14 = require("node:path");
+var import_node_fs11 = require("node:fs");
+var import_node_path13 = require("node:path");
 async function standupPrompt(pluginRoot, now = Date.now()) {
   const cached = readCache();
   if (cached && now - cached.fetched_at < NET.promptCacheHours * 36e5) return cached;
@@ -1468,13 +1457,13 @@ async function standupPrompt(pluginRoot, now = Date.now()) {
   return cached ?? fallback(pluginRoot);
 }
 function fallback(pluginRoot) {
-  const raw = (0, import_node_fs12.readFileSync)((0, import_node_path14.join)(pluginRoot, "prompts", "standup.fallback.md"), "utf8");
+  const raw = (0, import_node_fs11.readFileSync)((0, import_node_path13.join)(pluginRoot, "prompts", "standup.fallback.md"), "utf8");
   const m = /^<!--\s*version:\s*(\S+)\s*-->\s*\n/.exec(raw);
   return { version: m?.[1] ?? "fallback", text: m ? raw.slice(m[0].length) : raw };
 }
 function readCache() {
   try {
-    const c = JSON.parse((0, import_node_fs12.readFileSync)(paths.promptCache(), "utf8"));
+    const c = JSON.parse((0, import_node_fs11.readFileSync)(paths.promptCache(), "utf8"));
     return typeof c.text === "string" && typeof c.version === "string" && typeof c.fetched_at === "number" ? c : null;
   } catch {
     return null;
@@ -1483,19 +1472,19 @@ function readCache() {
 
 // src/standup/materials.ts
 var import_node_child_process4 = require("node:child_process");
-var import_node_fs14 = require("node:fs");
-var import_node_path16 = require("node:path");
+var import_node_fs13 = require("node:fs");
+var import_node_path15 = require("node:path");
 
 // src/standup/notes.ts
 var import_node_crypto3 = require("node:crypto");
-var import_node_fs13 = require("node:fs");
-var import_node_path15 = require("node:path");
+var import_node_fs12 = require("node:fs");
+var import_node_path14 = require("node:path");
 var NOTE_MAX_CHARS = 2e3;
-var notesFile = () => (0, import_node_path15.join)(dataDir(), "notes.jsonl");
+var notesFile = () => (0, import_node_path14.join)(dataDir(), "notes.jsonl");
 function readNotes() {
   let raw;
   try {
-    raw = (0, import_node_fs13.readFileSync)(notesFile(), "utf8");
+    raw = (0, import_node_fs12.readFileSync)(notesFile(), "utf8");
   } catch {
     return [];
   }
@@ -1548,12 +1537,12 @@ var PART_BYTES = 24e3;
 function rawFilesSince(fromMs) {
   const out = [];
   for (const repo of dirs(paths.digests())) {
-    for (const branch of dirs((0, import_node_path16.join)(paths.digests(), repo))) {
-      const raw = (0, import_node_path16.join)(paths.digests(), repo, branch, "raw");
+    for (const branch of dirs((0, import_node_path15.join)(paths.digests(), repo))) {
+      const raw = (0, import_node_path15.join)(paths.digests(), repo, branch, "raw");
       for (const f of files(raw)) {
         if (!f.endsWith(".json")) continue;
         try {
-          if ((0, import_node_fs14.statSync)((0, import_node_path16.join)(raw, f)).mtimeMs > fromMs) out.push((0, import_node_path16.join)(raw, f));
+          if ((0, import_node_fs13.statSync)((0, import_node_path15.join)(raw, f)).mtimeMs > fromMs) out.push((0, import_node_path15.join)(raw, f));
         } catch {
         }
       }
@@ -1565,7 +1554,7 @@ function loadCaptures(fromMs) {
   const caps = [];
   for (const f of rawFilesSince(fromMs)) {
     try {
-      caps.push(JSON.parse((0, import_node_fs14.readFileSync)(f, "utf8")));
+      caps.push(JSON.parse((0, import_node_fs13.readFileSync)(f, "utf8")));
     } catch {
     }
   }
@@ -1592,7 +1581,7 @@ function outsideCommits(repos, from, known, limitPerRepo = CAPTURE.maxCommitsPer
     for (const rec of (log2 ?? "").split("")) {
       const [sha, ref, ts, subject] = rec.trim().split("");
       if (!sha || !ts || known.has(sha)) continue;
-      out.push({ repo: (0, import_node_path16.basename)(repo), repoPath: repo, branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
+      out.push({ repo: (0, import_node_path15.basename)(repo), repoPath: repo, branch: (ref ?? "").replace(/^refs\/heads\//, ""), sha, ts, message: subject ?? "" });
       if (++n >= limitPerRepo) break;
     }
   }
@@ -1722,14 +1711,14 @@ function git2(cwd, args) {
 }
 var dirs = (d) => {
   try {
-    return (0, import_node_fs14.readdirSync)(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    return (0, import_node_fs13.readdirSync)(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {
     return [];
   }
 };
 var files = (d) => {
   try {
-    return (0, import_node_fs14.readdirSync)(d);
+    return (0, import_node_fs13.readdirSync)(d);
   } catch {
     return [];
   }
@@ -1737,7 +1726,7 @@ var files = (d) => {
 
 // src/standup/commands.ts
 var H = 36e5;
-var partsFile = () => (0, import_node_path17.join)(dataDir(), "standup-materials.json");
+var partsFile = () => (0, import_node_path16.join)(dataDir(), "standup-materials.json");
 async function standupCommand(args, pluginRoot, now = /* @__PURE__ */ new Date(), cwd = process.cwd()) {
   const [sub, ...rest] = args;
   switch (sub) {
@@ -1852,7 +1841,7 @@ async function prepare(args, pluginRoot, now) {
     enqueueEvent("shown", now);
   } else {
     try {
-      parts = JSON.parse((0, import_node_fs15.readFileSync)(partsFile(), "utf8"));
+      parts = JSON.parse((0, import_node_fs14.readFileSync)(partsFile(), "utf8"));
     } catch {
       return { code: 1, out: "No prepared materials: run standup prepare without --part first." };
     }
@@ -1964,9 +1953,9 @@ function sessionEnd(input, cliPath) {
 }
 
 // src/hooks/session-start.ts
-var import_node_path18 = require("node:path");
+var import_node_path17 = require("node:path");
 var import_node_child_process6 = require("node:child_process");
-var import_node_fs16 = require("node:fs");
+var import_node_fs15 = require("node:fs");
 function sessionStart(input, cliPath, now = /* @__PURE__ */ new Date()) {
   const outs = [];
   try {
@@ -2021,7 +2010,7 @@ Talk to the user in their language.`
 }
 function queueNotEmpty() {
   try {
-    return (0, import_node_fs16.readdirSync)(paths.queue()).some((f) => f.endsWith(".json") && !f.startsWith("."));
+    return (0, import_node_fs15.readdirSync)(paths.queue()).some((f) => f.endsWith(".json") && !f.startsWith("."));
   } catch {
     return false;
   }
@@ -2048,7 +2037,7 @@ function findMissedSessions(input, now = Date.now()) {
   });
 }
 function projectsDirFor(input) {
-  return input.transcript_path ? (0, import_node_path18.dirname)((0, import_node_path18.dirname)(input.transcript_path)) : paths.claudeProjects();
+  return input.transcript_path ? (0, import_node_path17.dirname)((0, import_node_path17.dirname)(input.transcript_path)) : paths.claudeProjects();
 }
 function newRepoCheck(input, cliPath, state = readState(), now = Date.now()) {
   if (!state.team) return null;
@@ -2124,7 +2113,7 @@ async function main(argv) {
         return code;
       }
       case "standup": {
-        const { code, out } = await standupCommand(argv.slice(1), (0, import_node_path19.dirname)((0, import_node_path19.dirname)(cliPath)));
+        const { code, out } = await standupCommand(argv.slice(1), (0, import_node_path18.dirname)((0, import_node_path18.dirname)(cliPath)));
         process.stdout.write(out + "\n");
         return code;
       }
