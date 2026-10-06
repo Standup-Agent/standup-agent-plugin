@@ -40,7 +40,7 @@ const PLACEHOLDER = new RegExp(
 );
 
 /** Key names whose value is a secret: `password=…`, `"api_key": "…"`, `DB_PASSWORD=…`. */
-const SECRET_KEY =
+const SECRET_KEY_NAME_PATTERN =
   '(?:[A-Za-z0-9_.-]*?(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|' +
   'auth[_-]?key|private[_-]?key|client[_-]?secret|credentials?)|(?:[A-Za-z0-9_.-]*[_.-])?pass)';
 
@@ -82,8 +82,8 @@ const RULES: Rule[] = [
 ];
 
 /** `key = value`, `key: "value"`, `"key": "value"` where the key names a secret. */
-const KEY_VALUE = new RegExp(
-  `(${B}["']?${SECRET_KEY}["']?\\s*(?::|=|:=)\\s*)(?:"([^"\\n]*)"|'([^'\\n]*)'|([^\\s"'=][^\\s"',;]*))`,
+const SECRET_ASSIGNMENT_PATTERN = new RegExp(
+  `(${B}["']?${SECRET_KEY_NAME_PATTERN}["']?\\s*(?::|=|:=)\\s*)(?:"([^"\\n]*)"|'([^'\\n]*)'|([^\\s"'=][^\\s"',;]*))`,
   'gi',
 );
 
@@ -99,7 +99,7 @@ function looksLikeProse(value: string, whole: string, end: number): boolean {
 }
 
 /** A line from a .env file: `KEY=value` or `export KEY=value`. */
-const ENV_LINE = /^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*=(.*)$/;
+const DOTENV_LINE_PATTERN = /^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*=(.*)$/;
 
 export function redactSecrets(input: string): RedactResult {
   const found: Record<string, number> = {};
@@ -115,7 +115,7 @@ export function redactSecrets(input: string): RedactResult {
     });
   }
 
-  text = text.replace(KEY_VALUE, (m: string, prefix: string, dq: string | undefined, sq: string | undefined,
+  text = text.replace(SECRET_ASSIGNMENT_PATTERN, (m: string, prefix: string, dq: string | undefined, sq: string | undefined,
     bare: string | undefined, offset: number, whole: string) => {
     const value = dq ?? sq ?? bare ?? '';
     if (value === '' || PLACEHOLDER.test(value.trim()) || value.startsWith('[REDACTED')) return m;
@@ -132,23 +132,23 @@ export function redactSecrets(input: string): RedactResult {
 /**
  * .env contents: two or more consecutive `KEY=value` lines are treated as an env file and every
  * value in the block is removed. A single `NODE_ENV=production` in prose is left alone; a single
- * secret-named line is already handled by KEY_VALUE.
+ * secret-named line is already handled by SECRET_ASSIGNMENT_PATTERN.
  */
 function redactEnvBlocks(text: string, hit: (kind: string) => void): string {
   const lines = text.split('\n');
   let i = 0;
   while (i < lines.length) {
-    if (!ENV_LINE.test(lines[i]!)) {
+    if (!DOTENV_LINE_PATTERN.test(lines[i]!)) {
       i++;
       continue;
     }
     let j = i;
-    while (j < lines.length && (ENV_LINE.test(lines[j]!) || /^[ \t]*#/.test(lines[j]!))) j++;
-    const envLines = lines.slice(i, j).filter((l) => ENV_LINE.test(l)).length;
+    while (j < lines.length && (DOTENV_LINE_PATTERN.test(lines[j]!) || /^[ \t]*#/.test(lines[j]!))) j++;
+    const envLines = lines.slice(i, j).filter((l) => DOTENV_LINE_PATTERN.test(l)).length;
     if (envLines >= 2) {
       for (let k = i; k < j; k++) {
         const line = lines[k]!;
-        const m = ENV_LINE.exec(line);
+        const m = DOTENV_LINE_PATTERN.exec(line);
         if (!m) continue;
         const value = m[1]!.trim().replace(/^["']|["']$/g, '');
         if (value === '' || value.startsWith('[REDACTED') || PLACEHOLDER.test(value)) continue;

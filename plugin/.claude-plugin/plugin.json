@@ -1,7 +1,7 @@
 {
   "name": "standup-agent",
   "displayName": "Standup Agent",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Standups that write themselves: drafted from your Claude Code work, confirmed in one tap, delivered to your team in Claude.",
   "author": { "name": "Standuply, Inc.", "email": "hello@standupagent.co", "url": "https://standupagent.co" },
   "homepage": "https://standupagent.co",

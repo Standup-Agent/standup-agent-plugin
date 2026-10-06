@@ -166,7 +166,7 @@ var PLACEHOLDER = new RegExp(
   ].join("|") + ")[,;]?$",
   "i"
 );
-var SECRET_KEY = "(?:[A-Za-z0-9_.-]*?(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|auth[_-]?key|private[_-]?key|client[_-]?secret|credentials?)|(?:[A-Za-z0-9_.-]*[_.-])?pass)";
+var SECRET_KEY_NAME_PATTERN = "(?:[A-Za-z0-9_.-]*?(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|auth[_-]?key|private[_-]?key|client[_-]?secret|credentials?)|(?:[A-Za-z0-9_.-]*[_.-])?pass)";
 var RULES = [
   // PEM private keys, also an unterminated block (text cut in the middle of a key).
   {
@@ -203,8 +203,8 @@ var RULES = [
     replace: (_m, pre, _pw, at) => `${pre}${mark("url_password")}${at}`
   }
 ];
-var KEY_VALUE = new RegExp(
-  `(${B}["']?${SECRET_KEY}["']?\\s*(?::|=|:=)\\s*)(?:"([^"\\n]*)"|'([^'\\n]*)'|([^\\s"'=][^\\s"',;]*))`,
+var SECRET_ASSIGNMENT_PATTERN = new RegExp(
+  `(${B}["']?${SECRET_KEY_NAME_PATTERN}["']?\\s*(?::|=|:=)\\s*)(?:"([^"\\n]*)"|'([^'\\n]*)'|([^\\s"'=][^\\s"',;]*))`,
   "gi"
 );
 function looksLikeProse(value, whole, end) {
@@ -213,7 +213,7 @@ function looksLikeProse(value, whole, end) {
   const rest = whole.slice(end, nl === -1 ? void 0 : nl).trim();
   return rest !== "" && !rest.startsWith("#");
 }
-var ENV_LINE = /^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*=(.*)$/;
+var DOTENV_LINE_PATTERN = /^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*=(.*)$/;
 function redactSecrets(input) {
   const found = {};
   const hit = (kind) => {
@@ -226,7 +226,7 @@ function redactSecrets(input) {
       return rule.replace ? rule.replace(m, ...rest.filter((x) => typeof x === "string")) : mark(rule.kind);
     });
   }
-  text = text.replace(KEY_VALUE, (m, prefix, dq, sq2, bare, offset, whole) => {
+  text = text.replace(SECRET_ASSIGNMENT_PATTERN, (m, prefix, dq, sq2, bare, offset, whole) => {
     const value = dq ?? sq2 ?? bare ?? "";
     if (value === "" || PLACEHOLDER.test(value.trim()) || value.startsWith("[REDACTED")) return m;
     if (bare !== void 0 && /:\s*$/.test(prefix) && looksLikeProse(bare, whole, offset + m.length)) return m;
@@ -241,17 +241,17 @@ function redactEnvBlocks(text, hit) {
   const lines = text.split("\n");
   let i = 0;
   while (i < lines.length) {
-    if (!ENV_LINE.test(lines[i])) {
+    if (!DOTENV_LINE_PATTERN.test(lines[i])) {
       i++;
       continue;
     }
     let j = i;
-    while (j < lines.length && (ENV_LINE.test(lines[j]) || /^[ \t]*#/.test(lines[j]))) j++;
-    const envLines = lines.slice(i, j).filter((l) => ENV_LINE.test(l)).length;
+    while (j < lines.length && (DOTENV_LINE_PATTERN.test(lines[j]) || /^[ \t]*#/.test(lines[j]))) j++;
+    const envLines = lines.slice(i, j).filter((l) => DOTENV_LINE_PATTERN.test(l)).length;
     if (envLines >= 2) {
       for (let k = i; k < j; k++) {
         const line = lines[k];
-        const m = ENV_LINE.exec(line);
+        const m = DOTENV_LINE_PATTERN.exec(line);
         if (!m) continue;
         const value = m[1].trim().replace(/^["']|["']$/g, "");
         if (value === "" || value.startsWith("[REDACTED") || PLACEHOLDER.test(value)) continue;
