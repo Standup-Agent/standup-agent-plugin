@@ -1,12 +1,24 @@
 {
   "name": "standup-agent",
   "displayName": "Standup Agent",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Standups that write themselves: drafted from your Claude Code work, confirmed in one tap, delivered to your team in Claude.",
   "author": { "name": "Standuply, Inc.", "email": "hello@standupagent.co", "url": "https://standupagent.co" },
   "homepage": "https://standupagent.co",
   "repository": "https://github.com/Standup-Agent/standup-agent-plugin",
   "license": "MIT",
-  "keywords": ["standup", "daily standup", "scrum", "agile", "status update", "team", "productivity"],
-  "icon": ".claude-plugin/icon.png"
+  "keywords": [
+    "standup",
+    "daily standup",
+    "scrum",
+    "agile",
+    "status update",
+    "team",
+    "productivity"
+  ],
+  "icon": ".claude-plugin/icon.png",
+  "privacyPolicyUrl": "https://standupagent.co/privacy",
+  "termsOfServiceUrl": "https://standupagent.co/terms",
+  "supportUrl": "mailto:hello@standupagent.co",
+  "documentationUrl": "https://github.com/Standup-Agent/standup-agent-plugin/tree/main/plugin#readme"
 }
