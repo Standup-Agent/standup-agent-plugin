@@ -1,7 +1,7 @@
 {
   "name": "standup-agent",
   "displayName": "Standup Agent",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "description": "Standups that write themselves: drafted from your Claude Code work, confirmed in one tap, delivered to your team in Claude.",
   "author": { "name": "Standuply, Inc.", "email": "hello@standupagent.co", "url": "https://standupagent.co" },
   "homepage": "https://standupagent.co",
@@ -19,6 +19,6 @@
   "icon": ".claude-plugin/icon.png",
   "privacyPolicyUrl": "https://standupagent.co/privacy",
   "termsOfServiceUrl": "https://standupagent.co/terms",
-  "supportUrl": "mailto:hello@standupagent.co",
+  "supportUrl": "https://standupagent.co",
   "documentationUrl": "https://github.com/Standup-Agent/standup-agent-plugin/tree/main/plugin#readme"
 }
